@@ -71,6 +71,17 @@ pub trait SaStorage: Send + Sync {
     /// Remaining TTL, if any | 剩余过期时间（若有）
     async fn ttl(&self, key: &str) -> StorageResult<Option<Duration>>;
 
+    /// Overwrite value and keep the current TTL. Missing key is a successful no-op
+    /// (Java `dao.update`). Default: `exists` + `ttl` + `set` (TOCTOU is accepted).
+    /// 覆盖值并保留现有 TTL；键不存在时成功空操作（对齐 Java `dao.update`）。
+    async fn set_keep_ttl(&self, key: &str, value: &str) -> StorageResult<()> {
+        if !self.exists(key).await? {
+            return Ok(());
+        }
+        let ttl = self.ttl(key).await?;
+        self.set(key, value, ttl).await
+    }
+
     /// 批量读：默认逐键 get，具体后端可覆盖为 mget
     async fn mget(&self, keys: &[&str]) -> StorageResult<Vec<Option<String>>> {
         let mut results = Vec::with_capacity(keys.len());

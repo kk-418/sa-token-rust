@@ -244,6 +244,21 @@ impl SaTokenDao {
         self.set_string(key, &raw, ttl).await
     }
 
+    /// Serialize and overwrite an object while keeping the existing key TTL.
+    /// Missing keys are a successful no-op.
+    /// 序列化后 KEEPTTL 覆盖写入；键不存在时成功空操作。
+    pub async fn set_object_keep_ttl<T: Serialize>(
+        &self,
+        key: &str,
+        value: &T,
+    ) -> SaTokenResult<()> {
+        let raw = self.encode(value)?;
+        self.storage
+            .set_keep_ttl(key, &raw)
+            .await
+            .map_err(|e| SaTokenError::StorageError(e.to_string()))
+    }
+
     /// 读取字符串列表（键缺失视为空列表）| Read a string list (absent = empty)
     pub async fn get_string_list(&self, key: &str) -> SaTokenResult<Vec<String>> {
         match self.get_string(key).await? {

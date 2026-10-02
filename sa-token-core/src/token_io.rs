@@ -6,7 +6,7 @@ use sa_token_adapter::context::{CookieOptions, SaRequest, SaResponse, SameSite};
 use sa_token_adapter::utils::extract_bearer_or_value;
 
 use crate::config::{SaTokenConfig, TokenCookieConfig};
-use crate::token::TokenValue;
+use crate::token::{TokenInfo, TokenValue};
 
 /// Read a token using the manager config flags.
 /// 按 Manager 配置开关读取 token。
@@ -153,12 +153,47 @@ pub fn read_token_from_maps(
 
 /// Write the token cookie when `is_write_cookie` is true.
 /// 仅当 `is_write_cookie` 为 true 时写入 token Cookie。
+///
+/// Max-Age follows `config.timeout` (same as a default login).
+/// Max-Age 跟随 `config.timeout`（与默认登录一致）。
 pub fn write_token_cookie<R: SaResponse>(res: &mut R, token: &TokenValue, config: &SaTokenConfig) {
+    write_token_cookie_with_max_age(res, token, config, config.timeout);
+}
+
+/// Write the token cookie with an explicit Max-Age (this login's timeout).
+/// 按指定 Max-Age 写入 token Cookie（本次登录 timeout）。
+///
+/// `is_write_cookie` is still the gate. `max_age_secs < 0` writes a session
+/// cookie (Max-Age omitted).
+/// `is_write_cookie` 仍为门闩。`max_age_secs < 0` 时写入会话 Cookie（不设 Max-Age）。
+pub fn write_token_cookie_with_max_age<R: SaResponse>(
+    res: &mut R,
+    token: &TokenValue,
+    config: &SaTokenConfig,
+    max_age_secs: i64,
+) {
     if !config.cookie.is_write_cookie {
         return;
     }
-    let opts = cookie_options(&config.cookie, config.timeout);
+    let opts = cookie_options(&config.cookie, max_age_secs);
     res.set_cookie(config.token_name.as_str(), token.as_str(), opts);
+}
+
+/// Write the token cookie using remaining lifetime from `TokenInfo.expire_time`.
+/// 按 `TokenInfo.expire_time` 的剩余秒数写入 token Cookie。
+///
+/// `expire_time == None` falls back to `config.timeout`.
+/// `expire_time` 为空时回退到 `config.timeout`。
+pub fn write_token_cookie_for_token<R: SaResponse>(
+    res: &mut R,
+    token_info: &TokenInfo,
+    config: &SaTokenConfig,
+) {
+    let max_age_secs = match token_info.expire_time {
+        Some(t) => (t - chrono::Utc::now()).num_seconds().max(0),
+        None => config.timeout,
+    };
+    write_token_cookie_with_max_age(res, &token_info.token, config, max_age_secs);
 }
 
 /// Clear the token cookie (same guard as write).
@@ -292,5 +327,100 @@ mod tests {
             Some("eyJabc")
         );
         assert_eq!(apply_token_prefix("eyJabc", Some("Bearer")), None);
+    }
+
+    struct MockResponse {
+        cookies: Vec<(String, String, CookieOptions)>,
+    }
+
+    impl MockResponse {
+        fn new() -> Self {
+            Self {
+                cookies: Vec::new(),
+            }
+        }
+    }
+
+    impl SaResponse for MockResponse {
+        fn set_header(&mut self, _name: &str, _value: &str) {}
+
+        fn set_cookie(&mut self, name: &str, value: &str, options: CookieOptions) {
+            self.cookies
+                .push((name.to_string(), value.to_string(), options));
+        }
+
+        fn set_status(&mut self, _status: u16) {}
+
+        fn set_json_body<T: serde::Serialize>(
+            &mut self,
+            _body: T,
+        ) -> Result<(), serde_json::Error> {
+            Ok(())
+        }
+    }
+
+    fn write_cfg(is_write_cookie: bool, timeout: i64) -> SaTokenConfig {
+        SaTokenConfig {
+            timeout,
+            cookie: TokenCookieConfig {
+                is_write_cookie,
+                ..TokenCookieConfig::default()
+            },
+            ..SaTokenConfig::default()
+        }
+    }
+
+    #[test]
+    fn write_token_cookie_skipped_when_is_write_cookie_false() {
+        let mut res = MockResponse::new();
+        let token = TokenValue::new("tok");
+        let config = write_cfg(false, 86400);
+        write_token_cookie(&mut res, &token, &config);
+        write_token_cookie_with_max_age(&mut res, &token, &config, 604800);
+        delete_token_cookie(&mut res, &config);
+        assert!(res.cookies.is_empty());
+    }
+
+    #[test]
+    fn write_token_cookie_default_max_age_equals_config_timeout() {
+        let mut res = MockResponse::new();
+        let token = TokenValue::new("tok");
+        let config = write_cfg(true, 86400);
+        write_token_cookie(&mut res, &token, &config);
+        assert_eq!(res.cookies.len(), 1);
+        assert_eq!(res.cookies[0].0, "sa-token");
+        assert_eq!(res.cookies[0].1, "tok");
+        assert_eq!(res.cookies[0].2.max_age, Some(config.timeout));
+        assert_eq!(res.cookies[0].2.max_age, Some(86400));
+    }
+
+    #[test]
+    fn write_token_cookie_with_max_age_remember_me() {
+        let mut res = MockResponse::new();
+        let token = TokenValue::new("tok");
+        let config = write_cfg(true, 86400);
+        write_token_cookie_with_max_age(&mut res, &token, &config, 7 * 24 * 3600);
+        assert_eq!(res.cookies.len(), 1);
+        assert_eq!(res.cookies[0].2.max_age, Some(604800));
+    }
+
+    #[test]
+    fn write_token_cookie_with_max_age_session_cookie() {
+        let mut res = MockResponse::new();
+        let token = TokenValue::new("tok");
+        let config = write_cfg(true, 86400);
+        write_token_cookie_with_max_age(&mut res, &token, &config, -1);
+        assert_eq!(res.cookies.len(), 1);
+        assert_eq!(res.cookies[0].2.max_age, None);
+    }
+
+    #[test]
+    fn write_token_cookie_delete_sets_max_age_zero() {
+        let mut res = MockResponse::new();
+        let config = write_cfg(true, 86400);
+        delete_token_cookie(&mut res, &config);
+        assert_eq!(res.cookies.len(), 1);
+        assert_eq!(res.cookies[0].1, "");
+        assert_eq!(res.cookies[0].2.max_age, Some(0));
     }
 }

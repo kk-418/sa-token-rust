@@ -316,6 +316,26 @@ impl SaStorage for RedisStorage {
         }
     }
 
+    async fn set_keep_ttl(&self, key: &str, value: &str) -> StorageResult<()> {
+        let mut conn = self.client.clone();
+        let full_key = self.full_key(key);
+        let exists: bool = conn
+            .exists(&full_key)
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+        if !exists {
+            return Ok(());
+        }
+        redis::cmd("SET")
+            .arg(&full_key)
+            .arg(value)
+            .arg("KEEPTTL")
+            .query_async::<()>(&mut conn)
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+        Ok(())
+    }
+
     async fn delete(&self, key: &str) -> StorageResult<()> {
         let mut conn = self.client.clone();
         let full_key = self.full_key(key);

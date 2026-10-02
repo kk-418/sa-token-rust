@@ -40,6 +40,13 @@ pub struct SaTokenConfig {
     /// a storage write on every token read)
     pub auto_renew: bool,
 
+    /// Refresh `last_active_time` on a valid read without changing token timeout.
+    /// Independent from `auto_renew`; default `false`.
+    /// 校验通过后只刷新 last-active（KEEPTTL），不改 token timeout。
+    /// 与 `auto_renew` 独立；默认 `false`。
+    #[serde(default)]
+    pub active_refresh: bool,
+
     /// 续签阈值（秒）：仅当 token 剩余有效时间低于该值时才真正触发续签写入。
     ///
     /// 语义（三段）：
@@ -355,6 +362,7 @@ impl Default for SaTokenConfig {
             // B1：默认关闭自动续签，避免每次读 token 都写存储
             // B1: auto-renew off by default to avoid a write on every token read
             auto_renew: false,
+            active_refresh: false,
             renew_threshold: 300,
             is_concurrent: true,
             is_share: false,
@@ -641,6 +649,13 @@ impl SaTokenConfigBuilder {
     /// 设置是否开启自动续签 | Enable or disable auto-renewal
     pub fn auto_renew(mut self, enabled: bool) -> Self {
         self.config.auto_renew = enabled;
+        self
+    }
+
+    /// Refresh last-active only; do not extend token timeout (default `false`).
+    /// 校验通过后只刷新 last-active，不改 token timeout（默认 `false`）。
+    pub fn active_refresh(mut self, enabled: bool) -> Self {
+        self.config.active_refresh = enabled;
         self
     }
 

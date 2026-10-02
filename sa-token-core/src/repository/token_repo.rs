@@ -9,6 +9,7 @@ use std::time::Duration;
 use chrono::{Duration as ChronoDuration, Utc};
 
 use crate::config::SaTokenConfig;
+use crate::context::SaTokenContext;
 use crate::dao::SaTokenDao;
 use crate::error::{SaTokenError, SaTokenResult};
 use crate::keys::LOGIN_TYPE_DEFAULT;
@@ -355,6 +356,31 @@ impl TokenRepo {
         Ok(info)
     }
 
+    /// Update `last_active_time` with KEEPTTL. Does not change `expire_time`.
+    /// Same `SaTokenContext` request refreshes once; no context refreshes every call.
+    /// 只更新 last-active 并 KEEPTTL 写回，不改 `expire_time`。
+    /// 同一请求只刷新一次；无上下文则每次都刷。
+    pub async fn apply_active_refresh(
+        &self,
+        token: &str,
+        mut info: TokenInfo,
+    ) -> SaTokenResult<TokenInfo> {
+        if SaTokenContext::try_current().is_some_and(|c| c.active_refreshed()) {
+            return Ok(info);
+        }
+
+        info.update_active_time();
+        let key = self.dao.keys().token_info(token);
+        self.dao.set_object_keep_ttl(&key, &info).await?;
+
+        if SaTokenContext::try_current().is_some() {
+            let _ = SaTokenContext::with_current_mut(|inner| {
+                inner.active_refreshed = true;
+            });
+        }
+        Ok(info)
+    }
+
     // ==================== 组合读取 | Composite reads ====================
 
     /// 读取并校验 token（标记 → 存在性 → 过期 → 冻结），**不触发**续签。
@@ -375,9 +401,14 @@ impl TokenRepo {
         Ok(info)
     }
 
-    /// 读取并校验 token，按策略执行自动续签。
+    /// 读取并校验 token，按策略执行活跃刷新与自动续签。
     pub async fn load_valid_token_info(&self, token: &TokenValue) -> SaTokenResult<TokenInfo> {
         let info = self.load_token_info_no_renew(token).await?;
+        let info = if self.config.active_refresh {
+            self.apply_active_refresh(token.as_str(), info).await?
+        } else {
+            info
+        };
         if self.should_auto_renew(&info) {
             return self.apply_auto_renew(token.as_str(), info).await;
         }
@@ -399,22 +430,42 @@ impl TokenRepo {
 mod tests {
     use super::*;
     use crate::config::TokenStyle;
+    use crate::context::SaTokenContext;
+    use sa_token_adapter::CountingStorage;
+    use sa_token_adapter::storage::SaStorage;
     use sa_token_storage_memory::MemoryStorage;
 
     fn repo(auto_renew: bool, renew_threshold: i64, timeout: i64) -> TokenRepo {
-        let config = Arc::new(SaTokenConfig {
+        repo_cfg(SaTokenConfig {
             auto_renew,
             renew_threshold,
             timeout,
             active_timeout: -1,
             token_style: TokenStyle::Uuid,
             ..Default::default()
-        });
-        let dao = Arc::new(crate::dao::SaTokenDao::new(
+        })
+    }
+
+    fn repo_cfg(config: SaTokenConfig) -> TokenRepo {
+        let config = Arc::new(config);
+        let dao = Arc::new(SaTokenDao::new(
             Arc::new(MemoryStorage::new()),
             config.clone(),
         ));
         TokenRepo::new(dao, config)
+    }
+
+    async fn seed_token(
+        repo: &TokenRepo,
+        token: &str,
+        idle_secs: i64,
+        expire_in_secs: i64,
+    ) -> TokenInfo {
+        let mut info = TokenInfo::new(TokenValue::new(token), "u");
+        info.last_active_time = Utc::now() - ChronoDuration::seconds(idle_secs);
+        info.expire_time = Some(Utc::now() + ChronoDuration::seconds(expire_in_secs));
+        repo.save_token_info(&info).await.unwrap();
+        repo.get_token_info(token).await.unwrap().unwrap()
     }
 
     #[test]
@@ -443,5 +494,95 @@ mod tests {
         let mut near = TokenInfo::new(TokenValue::new("t2"), "u");
         near.expire_time = Some(Utc::now() + ChronoDuration::seconds(200));
         assert!(r.should_auto_renew(&near));
+    }
+
+    #[tokio::test]
+    async fn active_refresh_false_does_not_advance_last_active() {
+        let r = repo_cfg(SaTokenConfig {
+            active_refresh: false,
+            auto_renew: false,
+            active_timeout: 3600,
+            timeout: 86400,
+            ..Default::default()
+        });
+        let before = seed_token(&r, "t", 10, 86400).await;
+        let loaded = r
+            .load_valid_token_info(&TokenValue::new("t"))
+            .await
+            .unwrap();
+        assert_eq!(loaded.last_active_time, before.last_active_time);
+        assert_eq!(loaded.expire_time, before.expire_time);
+    }
+
+    #[tokio::test]
+    async fn active_refresh_true_advances_last_active_keeps_expire_time() {
+        let r = repo_cfg(SaTokenConfig {
+            active_refresh: true,
+            auto_renew: false,
+            active_timeout: 3600,
+            timeout: 86400,
+            ..Default::default()
+        });
+        let before = seed_token(&r, "t", 10, 86400).await;
+        let loaded = r
+            .load_valid_token_info(&TokenValue::new("t"))
+            .await
+            .unwrap();
+        assert!(
+            loaded.last_active_time > before.last_active_time,
+            "active_refresh must advance last_active_time"
+        );
+        assert_eq!(loaded.expire_time, before.expire_time);
+    }
+
+    #[tokio::test]
+    async fn active_refresh_skips_when_frozen() {
+        let r = repo_cfg(SaTokenConfig {
+            active_refresh: true,
+            auto_renew: false,
+            active_timeout: 60,
+            timeout: 86400,
+            ..Default::default()
+        });
+        let before = seed_token(&r, "t", 61, 86400).await;
+        let err = r
+            .load_valid_token_info(&TokenValue::new("t"))
+            .await
+            .unwrap_err();
+        assert!(matches!(err, SaTokenError::TokenInactive));
+        let stored = r.get_token_info("t").await.unwrap().unwrap();
+        assert_eq!(stored.last_active_time, before.last_active_time);
+    }
+
+    #[tokio::test]
+    async fn active_refresh_once_per_request_scope() {
+        let counting = Arc::new(CountingStorage::new(Arc::new(MemoryStorage::new())));
+        let config = Arc::new(SaTokenConfig {
+            active_refresh: true,
+            auto_renew: false,
+            active_timeout: 3600,
+            timeout: 86400,
+            ..Default::default()
+        });
+        let storage: Arc<dyn SaStorage> = counting.clone();
+        let dao = Arc::new(SaTokenDao::new(storage, config.clone()));
+        let r = TokenRepo::new(dao, config);
+        let before = seed_token(&r, "t", 10, 86400).await;
+        let tv = TokenValue::new("t");
+        let ctx = SaTokenContext::new();
+
+        SaTokenContext::scope(ctx, async {
+            let first = r.load_valid_token_info(&tv).await.unwrap();
+            assert!(first.last_active_time > before.last_active_time);
+            counting.reset_counts();
+            let second = r.load_valid_token_info(&tv).await.unwrap();
+            assert_eq!(second.last_active_time, first.last_active_time);
+            assert_eq!(
+                counting.set_count(),
+                0,
+                "second load in the same request must not write"
+            );
+        })
+        .await;
     }
 }

@@ -163,6 +163,16 @@ impl SaStorage for MemoryStorage {
         Ok(())
     }
 
+    async fn set_keep_ttl(&self, key: &str, value: &str) -> StorageResult<()> {
+        let mut s = self.shard(key).write().await;
+        if let Some(item) = s.scalars.get_mut(key) {
+            if !item.is_expired() {
+                item.value = value.to_string();
+            }
+        }
+        Ok(())
+    }
+
     async fn delete(&self, key: &str) -> StorageResult<()> {
         let mut s = self.shard(key).write().await;
         s.scalars.remove(key);
@@ -567,5 +577,27 @@ mod tests {
         assert_eq!(counting.get_count(), 1);
         assert_eq!(counting.delete_count(), 1);
         assert_eq!(counting.set_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn test_set_keep_ttl_preserves_expire_at() {
+        let storage = MemoryStorage::new();
+        storage
+            .set("k", "v1", Some(Duration::from_secs(60)))
+            .await
+            .unwrap();
+        storage.expire("k", Duration::from_secs(5)).await.unwrap();
+        let before = storage.ttl("k").await.unwrap().expect("ttl before keep");
+        storage.set_keep_ttl("k", "v2").await.unwrap();
+        assert_eq!(storage.get("k").await.unwrap().as_deref(), Some("v2"));
+        let after = storage.ttl("k").await.unwrap().expect("ttl after keep");
+        assert!(after <= before);
+        assert!(
+            after >= Duration::from_secs(3),
+            "ttl must stay near the short remaining, not reset; got {after:?}"
+        );
+
+        storage.set_keep_ttl("missing", "x").await.unwrap();
+        assert!(!storage.exists("missing").await.unwrap());
     }
 }

@@ -77,6 +77,11 @@ impl SaStorage for CountingStorage {
         self.inner.set(key, value, ttl).await
     }
 
+    async fn set_keep_ttl(&self, key: &str, value: &str) -> StorageResult<()> {
+        self.set_count.fetch_add(1, Ordering::Relaxed);
+        self.inner.set_keep_ttl(key, value).await
+    }
+
     async fn delete(&self, key: &str) -> StorageResult<()> {
         self.delete_count.fetch_add(1, Ordering::Relaxed);
         self.inner.delete(key).await

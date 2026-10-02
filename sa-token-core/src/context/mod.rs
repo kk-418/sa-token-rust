@@ -55,6 +55,10 @@ pub struct SaTokenContextInner {
     /// Headers needed by HTTP Basic / Same-Token macros.
     /// HTTP Basic / Same-Token 宏所需的请求头快照。
     pub auth_meta: RequestAuthMeta,
+
+    /// Whether `active_refresh` already ran in this request (Java `SaHolder.getStorage()`).
+    /// 本请求是否已执行过 `active_refresh`（对齐 Java `SaHolder.getStorage()` 去重）。
+    pub active_refreshed: bool,
 }
 
 /// Headers needed by HTTP Basic / Same-Token macros (copied before `.await`).
@@ -247,6 +251,12 @@ impl SaTokenContext {
     /// 已捕获鉴权头的快照。
     pub fn auth_meta(&self) -> RequestAuthMeta {
         Self::read_inner(&self.inner).auth_meta.clone()
+    }
+
+    /// Whether `active_refresh` already ran in this request.
+    /// 本请求是否已执行过 `active_refresh`。
+    pub fn active_refreshed(&self) -> bool {
+        Self::read_inner(&self.inner).active_refreshed
     }
 
     // ==================== Scope 与 Task-Local 管理 ====================

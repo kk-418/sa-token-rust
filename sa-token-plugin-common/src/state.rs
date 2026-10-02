@@ -114,6 +114,12 @@ impl SaTokenStateBuilder {
         self
     }
 
+    /// Refresh last-active only; do not extend token timeout (default `false`).
+    pub fn active_refresh(mut self, enabled: bool) -> Self {
+        self.config_builder = self.config_builder.active_refresh(enabled);
+        self
+    }
+
     /// Renewal threshold in seconds (default `300`).
     pub fn renew_threshold(mut self, seconds: i64) -> Self {
         self.config_builder = self.config_builder.renew_threshold(seconds);

@@ -20,5 +20,8 @@ pub use crate::{
         extract_token_from, match_any, match_path, need_auth, process_auth, run_auth_flow,
     },
     token,
-    token_io::{apply_token_prefix, delete_token_cookie, read_token, write_token_cookie},
+    token_io::{
+        apply_token_prefix, delete_token_cookie, read_token, write_token_cookie,
+        write_token_cookie_for_token, write_token_cookie_with_max_age,
+    },
 };

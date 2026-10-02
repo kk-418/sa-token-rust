@@ -137,6 +137,16 @@ impl SaStorage for DatabaseStorage {
         Ok(())
     }
 
+    async fn set_keep_ttl(&self, key: &str, value: &str) -> StorageResult<()> {
+        sqlx::query("UPDATE sa_token_storage SET value = $2, updated_at = NOW() WHERE key = $1")
+            .bind(key)
+            .bind(value)
+            .execute(&self.pool)
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+        Ok(())
+    }
+
     async fn delete(&self, key: &str) -> StorageResult<()> {
         sqlx::query("DELETE FROM sa_token_storage WHERE key = $1")
             .bind(key)

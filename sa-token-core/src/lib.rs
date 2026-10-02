@@ -128,5 +128,8 @@ pub use temp_token::{
 pub use token::{
     JwtAlgorithm, JwtClaims, JwtManager, TokenInfo, TokenValue, generate_unique, intern_login_type,
 };
-pub use token_io::{apply_token_prefix, delete_token_cookie, read_token, write_token_cookie};
+pub use token_io::{
+    apply_token_prefix, delete_token_cookie, read_token, write_token_cookie,
+    write_token_cookie_for_token, write_token_cookie_with_max_age,
+};
 pub use ws::{DefaultWsTokenExtractor, WsAuthInfo, WsAuthManager, WsTokenExtractor};

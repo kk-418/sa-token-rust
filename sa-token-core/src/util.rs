@@ -281,12 +281,41 @@ impl StpUtil {
 
     /// Opt-in write of the token cookie (no-op unless `is_write_cookie` is true).
     /// 可选写入 token Cookie（未开启 `is_write_cookie` 时为空操作）。
+    ///
+    /// Max-Age follows the global `config.timeout`.
+    /// Max-Age 跟随全局 `config.timeout`。
     pub fn write_token_cookie<R: sa_token_adapter::context::SaResponse>(
         res: &mut R,
         token: &TokenValue,
     ) -> SaTokenResult<()> {
         let manager = Self::try_get_manager()?;
         crate::token_io::write_token_cookie(res, token, &manager.config);
+        Ok(())
+    }
+
+    /// Opt-in write of the token cookie with an explicit Max-Age.
+    /// 按指定 Max-Age 可选写入 token Cookie（未开启 `is_write_cookie` 时为空操作）。
+    ///
+    /// `max_age_secs < 0` writes a session cookie (no Max-Age).
+    /// `max_age_secs < 0` 时写入会话 Cookie（不设 Max-Age）。
+    pub fn write_token_cookie_with_max_age<R: sa_token_adapter::context::SaResponse>(
+        res: &mut R,
+        token: &TokenValue,
+        max_age_secs: i64,
+    ) -> SaTokenResult<()> {
+        let manager = Self::try_get_manager()?;
+        crate::token_io::write_token_cookie_with_max_age(res, token, &manager.config, max_age_secs);
+        Ok(())
+    }
+
+    /// Opt-in write of the token cookie using remaining lifetime from `TokenInfo`.
+    /// 按 `TokenInfo.expire_time` 的剩余秒数可选写入 token Cookie。
+    pub fn write_token_cookie_for_token<R: sa_token_adapter::context::SaResponse>(
+        res: &mut R,
+        token_info: &TokenInfo,
+    ) -> SaTokenResult<()> {
+        let manager = Self::try_get_manager()?;
+        crate::token_io::write_token_cookie_for_token(res, token_info, &manager.config);
         Ok(())
     }
 
