@@ -73,12 +73,60 @@ impl TokenRepo {
         self.dao.default_ttl()
     }
 
+    /// Remaining storage TTL from `expire_time` (`None` = never expires).
+    /// 由 `expire_time` 推剩余寿命；`None` 表示永久。
+    pub fn ttl_for(&self, info: &TokenInfo) -> Option<Duration> {
+        let expire = info.expire_time?;
+        let remaining = expire
+            .signed_duration_since(Utc::now())
+            .num_seconds()
+            .max(0);
+        Some(Duration::from_secs(remaining as u64))
+    }
+
+    /// `max(existing TTL, new TTL)` for shared keys (index / login mapping).
+    ///
+    /// - new `None` (permanent) → permanent
+    /// - key missing → new TTL
+    /// - key exists and remaining is `None` → already permanent, do not shorten
+    /// - both finite → the larger Duration
+    async fn max_ttl(
+        &self,
+        key: &str,
+        new_ttl: Option<Duration>,
+    ) -> SaTokenResult<Option<Duration>> {
+        let Some(new) = new_ttl else {
+            return Ok(None);
+        };
+        if !self.dao.exists(key).await? {
+            return Ok(Some(new));
+        }
+        Ok(match self.dao.ttl(key).await? {
+            None => None,
+            Some(existing) => Some(existing.max(new)),
+        })
+    }
+
+    /// Set remaining TTL; `None` rewrites the scalar as permanent.
+    /// 写入剩余 TTL；`None` 把标量键改写为永久。
+    async fn write_ttl(&self, key: &str, ttl: Option<Duration>) -> SaTokenResult<()> {
+        match ttl {
+            Some(d) => self.dao.expire(key, d).await,
+            None => {
+                let Some(raw) = self.dao.get_string(key).await? else {
+                    return Ok(());
+                };
+                self.dao.set_string(key, &raw, None).await
+            }
+        }
+    }
+
     // ==================== token 体 | Token body ====================
 
     /// 写入 token 体 | Persist a token body
     pub async fn save_token_info(&self, info: &TokenInfo) -> SaTokenResult<()> {
         let key = self.dao.keys().token_info(info.token.as_str());
-        self.dao.set_object(&key, info, self.ttl()).await
+        self.dao.set_object(&key, info, self.ttl_for(info)).await
     }
 
     /// 读取 token 体（不做任何校验）| Read a token body without validation
@@ -112,8 +160,22 @@ impl TokenRepo {
         login_id: &str,
         token: &str,
     ) -> SaTokenResult<()> {
+        self.save_login_mapping_with_ttl(login_type, login_id, token, self.ttl())
+            .await
+    }
+
+    /// Write `login:token` with an explicit TTL, taking `max(existing, new)`.
+    /// 写入 `login:token`，TTL 取 `max(现有, 新)`。
+    pub async fn save_login_mapping_with_ttl(
+        &self,
+        login_type: &str,
+        login_id: &str,
+        token: &str,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
         let key = self.dao.keys().login_token(login_type, login_id);
-        self.dao.set_string(&key, token, self.ttl()).await
+        let ttl = self.max_ttl(&key, ttl).await?;
+        self.dao.set_string(&key, token, ttl).await
     }
 
     /// CAS 写入 `login:token` 映射 —— 登录事务的提交点（修 B1-14）。
@@ -124,8 +186,23 @@ impl TokenRepo {
         expected: Option<&str>,
         new_token: &str,
     ) -> SaTokenResult<bool> {
+        self.cas_login_mapping_with_ttl(login_type, login_id, expected, new_token, self.ttl())
+            .await
+    }
+
+    /// CAS-write `login:token` with an explicit TTL (`max(existing, new)`).
+    /// CAS 写入 `login:token`，TTL 取 `max(现有, 新)`。
+    pub async fn cas_login_mapping_with_ttl(
+        &self,
+        login_type: &str,
+        login_id: &str,
+        expected: Option<&str>,
+        new_token: &str,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<bool> {
         let key = self.dao.keys().login_token(login_type, login_id);
-        self.dao.cas(&key, expected, new_token, self.ttl()).await
+        let ttl = self.max_ttl(&key, ttl).await?;
+        self.dao.cas(&key, expected, new_token, ttl).await
     }
 
     /// 删除 `login:token` 映射 | Delete the mapping
@@ -192,9 +269,22 @@ impl TokenRepo {
         login_type: &str,
         login_id: &str,
     ) -> SaTokenResult<()> {
+        self.save_token_id_mapping_with_ttl(token, login_type, login_id, self.ttl())
+            .await
+    }
+
+    /// Write token → identity mapping with an explicit TTL.
+    /// 写入 token → 身份 映射，使用本次 TTL。
+    pub async fn save_token_id_mapping_with_ttl(
+        &self,
+        token: &str,
+        login_type: &str,
+        login_id: &str,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
         let key = self.dao.keys().token_id_mapping(token);
         let value = Self::encode_token_id_value(login_type, login_id);
-        self.dao.set_string(&key, &value, self.ttl()).await
+        self.dao.set_string(&key, &value, ttl).await
     }
 
     /// 写入下线标记（`-4` / `-5`），同样带 TTL。
@@ -242,8 +332,39 @@ impl TokenRepo {
         login_id: &str,
         token: &str,
     ) -> SaTokenResult<()> {
+        self.append_index_with_ttl(login_type, login_id, token, self.ttl())
+            .await
+    }
+
+    /// Append to the index with `max(existing TTL, new TTL)`.
+    /// 追加索引，TTL 取 `max(现有, 新)`。
+    pub async fn append_index_with_ttl(
+        &self,
+        login_type: &str,
+        login_id: &str,
+        token: &str,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
         let key = self.index_key(login_type, login_id);
-        self.dao.list_push_unique(&key, token, self.ttl()).await?;
+        let ttl = self.max_ttl(&key, ttl).await?;
+        self.push_index(&key, token, ttl).await
+    }
+
+    /// Push a member; when targeting permanent, rewrite the list if it still has a TTL.
+    /// 追加成员；目标为永久且现有仍带 TTL 时，重写列表以去掉过期。
+    async fn push_index(&self, key: &str, token: &str, ttl: Option<Duration>) -> SaTokenResult<()> {
+        if ttl.is_none() && self.dao.exists(key).await? && self.dao.ttl(key).await?.is_some() {
+            let mut members = self.dao.list_range(key, 0, None).await?;
+            if !members.iter().any(|m| m == token) {
+                members.push(token.to_string());
+            }
+            self.dao.delete(key).await?;
+            for m in members {
+                self.dao.list_push_unique(key, &m, None).await?;
+            }
+            return Ok(());
+        }
+        self.dao.list_push_unique(key, token, ttl).await?;
         Ok(())
     }
 
@@ -353,6 +474,8 @@ impl TokenRepo {
 
         let key = self.dao.keys().token_info(token);
         self.dao.set_object(&key, &info, ttl).await?;
+        let map_key = self.dao.keys().token_id_mapping(token);
+        self.write_ttl(&map_key, ttl).await?;
         Ok(info)
     }
 
@@ -584,5 +707,139 @@ mod tests {
             );
         })
         .await;
+    }
+
+    #[test]
+    fn ttl_for_none_is_permanent() {
+        let r = repo(false, -1, 10);
+        let info = TokenInfo::new(TokenValue::new("t"), "u");
+        assert!(r.ttl_for(&info).is_none());
+    }
+
+    #[test]
+    fn ttl_for_remaining_clamps_at_zero() {
+        let r = repo(false, -1, 10);
+        let mut info = TokenInfo::new(TokenValue::new("t"), "u");
+        info.expire_time = Some(Utc::now() + ChronoDuration::seconds(3600));
+        let secs = r.ttl_for(&info).expect("finite ttl").as_secs();
+        assert!(
+            (3590..=3600).contains(&secs),
+            "remaining should be ~3600, got {secs}"
+        );
+
+        info.expire_time = Some(Utc::now() - ChronoDuration::seconds(5));
+        assert_eq!(r.ttl_for(&info).expect("expired ttl").as_secs(), 0);
+    }
+
+    #[tokio::test]
+    async fn save_token_info_uses_expire_time_not_global() {
+        let r = repo(false, -1, 10);
+        let mut info = TokenInfo::new(TokenValue::new("t"), "u");
+        info.expire_time = Some(Utc::now() + ChronoDuration::seconds(3600));
+        r.save_token_info(&info).await.expect("save");
+        let key = r.dao().keys().token_info("t");
+        let ttl = r
+            .dao()
+            .ttl(&key)
+            .await
+            .expect("ttl")
+            .expect("finite")
+            .as_secs();
+        assert!(
+            (3590..=3600).contains(&ttl),
+            "token body ttl={ttl}, want ~3600 not global 10"
+        );
+    }
+
+    #[tokio::test]
+    async fn max_ttl_keeps_longer_and_permanent() {
+        let r = repo(false, -1, 10);
+        let key = "sa:login:tokens:u";
+        r.dao()
+            .list_push_unique(key, "t1", Some(Duration::from_secs(3600)))
+            .await
+            .expect("seed index");
+
+        let kept = r
+            .max_ttl(key, Some(Duration::from_secs(10)))
+            .await
+            .expect("max");
+        let secs = kept.expect("finite").as_secs();
+        assert!(
+            (3590..=3600).contains(&secs),
+            "max_ttl must not shorten, got {secs}"
+        );
+
+        let missing = r
+            .max_ttl("sa:login:tokens:missing", Some(Duration::from_secs(10)))
+            .await
+            .expect("missing");
+        assert_eq!(missing, Some(Duration::from_secs(10)));
+
+        assert!(
+            r.max_ttl(key, None).await.expect("permanent new").is_none(),
+            "new permanent wins"
+        );
+
+        r.dao()
+            .set_string("sa:login:token:perm", "t", None)
+            .await
+            .expect("seed permanent");
+        assert!(
+            r.max_ttl("sa:login:token:perm", Some(Duration::from_secs(10)))
+                .await
+                .expect("existing permanent")
+                .is_none(),
+            "existing permanent must not shorten"
+        );
+    }
+
+    #[tokio::test]
+    async fn append_index_takes_max_ttl() {
+        let r = repo(false, -1, 10);
+        r.append_index_with_ttl("default", "u", "t1", Some(Duration::from_secs(3600)))
+            .await
+            .expect("first");
+        r.append_index_with_ttl("default", "u", "t2", Some(Duration::from_secs(10)))
+            .await
+            .expect("second");
+        let key = r.index_key("default", "u");
+        let ttl = r
+            .dao()
+            .ttl(&key)
+            .await
+            .expect("ttl")
+            .expect("finite")
+            .as_secs();
+        assert!(
+            (3590..=3600).contains(&ttl),
+            "index ttl={ttl}, want ~3600 not 10"
+        );
+    }
+
+    #[tokio::test]
+    async fn apply_auto_renew_syncs_mapping_ttl() {
+        let r = repo(true, -1, 3600);
+        let token = "t-renew";
+        let mut info = TokenInfo::new(TokenValue::new(token), "u");
+        info.expire_time = Some(Utc::now() + ChronoDuration::seconds(10));
+        r.save_token_info(&info).await.expect("save body");
+        r.save_token_id_mapping_with_ttl(token, "default", "u", Some(Duration::from_secs(10)))
+            .await
+            .expect("save mapping");
+
+        r.apply_auto_renew(token, info).await.expect("renew");
+        let map_key = r.dao().keys().token_id_mapping(token);
+        let ttl = r
+            .dao()
+            .ttl(&map_key)
+            .await
+            .expect("ttl")
+            .expect("finite")
+            .as_secs();
+        assert!(
+            (3590..=3600).contains(&ttl),
+            "mapping ttl after auto_renew={ttl}, want ~3600"
+        );
     }
 }

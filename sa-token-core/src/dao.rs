@@ -165,6 +165,22 @@ impl SaTokenDao {
             .map_err(|e| SaTokenError::StorageError(e.to_string()))
     }
 
+    /// 键是否存在 | Whether the key exists
+    pub async fn exists(&self, key: &str) -> SaTokenResult<bool> {
+        self.storage
+            .exists(key)
+            .await
+            .map_err(|e| SaTokenError::StorageError(e.to_string()))
+    }
+
+    /// 更新键 TTL | Update a key's remaining TTL
+    pub async fn expire(&self, key: &str, ttl: Duration) -> SaTokenResult<()> {
+        self.storage
+            .expire(key, ttl)
+            .await
+            .map_err(|e| SaTokenError::StorageError(e.to_string()))
+    }
+
     /// 原子读取并删除（nonce 一次性消费依赖此原语，A1 `get_del`）。
     /// Atomically read-and-delete; the one-shot nonce consumption relies on it.
     pub async fn take_string(&self, key: &str) -> SaTokenResult<Option<String>> {

@@ -84,8 +84,55 @@ impl SessionRepo {
 
     /// 按命名空间写入账号 Session | Persist an account session by namespace
     pub async fn save_by_ns(&self, ns: &AccountNs, session: &SaSession) -> SaTokenResult<()> {
+        self.save_by_ns_with_ttl(ns, session, self.session_ttl())
+            .await
+    }
+
+    /// Persist an account session with an explicit create-TTL.
+    /// Existing keys are KEEPTTL (Java `dao.update`); missing keys use `ttl`.
+    /// 写入账号 Session；已存在则 KEEPTTL，不存在则用 `ttl` 创建。
+    pub async fn save_by_ns_with_ttl(
+        &self,
+        ns: &AccountNs,
+        session: &SaSession,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
         let key = self.account_session_key(ns)?;
-        self.dao.set_object(&key, session, self.session_ttl()).await
+        if self.dao.exists(&key).await? {
+            self.dao.set_object_keep_ttl(&key, session).await
+        } else {
+            self.dao.set_object(&key, session, ttl).await
+        }
+    }
+
+    /// Align Java `session.updateMinTimeout`: only extend, never shorten.
+    /// Missing key is a no-op. `None` TTL means permanent when the backend allows it.
+    /// 对齐 Java `updateMinTimeout`：只延长不缩短；键不存在空操作。
+    pub async fn update_min_timeout(
+        &self,
+        ns: &AccountNs,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
+        let key = self.account_session_key(ns)?;
+        if !self.dao.exists(&key).await? {
+            return Ok(());
+        }
+        match ttl {
+            None => {
+                if self.dao.ttl(&key).await?.is_none() {
+                    return Ok(());
+                }
+                let Some(raw) = self.dao.get_string(&key).await? else {
+                    return Ok(());
+                };
+                self.dao.set_string(&key, &raw, None).await
+            }
+            Some(new) => match self.dao.ttl(&key).await? {
+                None => Ok(()),
+                Some(remaining) if remaining >= new => Ok(()),
+                Some(_) => self.dao.expire(&key, new).await,
+            },
+        }
     }
 
     /// 按 (login_type, login_id) 写入账号 Session。
@@ -129,9 +176,21 @@ impl SessionRepo {
         ns: &AccountNs,
         terminal: SaTerminalInfo,
     ) -> SaTokenResult<()> {
+        self.add_terminal_with_ttl(ns, terminal, self.session_ttl())
+            .await
+    }
+
+    /// Append a terminal; create-TTL applies only when the session key is missing.
+    /// 追加终端；仅在 Session 键不存在时使用传入 TTL 创建。
+    pub async fn add_terminal_with_ttl(
+        &self,
+        ns: &AccountNs,
+        terminal: SaTerminalInfo,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
         let mut session = self.get_by_ns(ns).await?;
         session.add_terminal(terminal);
-        self.save_by_ns(ns, &session).await
+        self.save_by_ns_with_ttl(ns, &session, ttl).await
     }
 
     /// 移除终端信息，返回是否确实移除。
@@ -191,8 +250,19 @@ impl SessionRepo {
 
     /// 立即创建空的 Token-Session（`right_now_create_token_session`）。
     pub async fn create_token_session(&self, token: &TokenValue) -> SaTokenResult<()> {
+        self.create_token_session_with_ttl(token, self.token_session_ttl())
+            .await
+    }
+
+    /// Create an empty Token-Session with an explicit TTL.
+    /// 立即创建空 Token-Session，使用本次 TTL。
+    pub async fn create_token_session_with_ttl(
+        &self,
+        token: &TokenValue,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
         let session = SaSession::new(format!("token-session:{}", token.as_str()));
-        self.save_token_session(token, &session).await
+        self.save_token_session_with_ttl(token, &session, ttl).await
     }
 
     /// 写入 Token-Session | Persist a token session
@@ -201,10 +271,24 @@ impl SessionRepo {
         token: &TokenValue,
         session: &SaSession,
     ) -> SaTokenResult<()> {
-        let key = self.dao.keys().token_session(token.as_str());
-        self.dao
-            .set_object(&key, session, self.token_session_ttl())
+        self.save_token_session_with_ttl(token, session, self.token_session_ttl())
             .await
+    }
+
+    /// Persist a Token-Session with an explicit create-TTL (KEEPTTL if the key exists).
+    /// 写入 Token-Session；已存在 KEEPTTL，不存在用 `ttl` 创建。
+    pub async fn save_token_session_with_ttl(
+        &self,
+        token: &TokenValue,
+        session: &SaSession,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
+        let key = self.dao.keys().token_session(token.as_str());
+        if self.dao.exists(&key).await? {
+            self.dao.set_object_keep_ttl(&key, session).await
+        } else {
+            self.dao.set_object(&key, session, ttl).await
+        }
     }
 
     /// 读取 Token-Session | Read a token session
@@ -228,5 +312,130 @@ impl SessionRepo {
     /// 配置引用（`is_logout_keep_token_session` 等判定用）。
     pub fn config(&self) -> &Arc<SaTokenConfig> {
         &self.config
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::TokenStyle;
+    use sa_token_storage_memory::MemoryStorage;
+
+    fn repo(timeout: i64) -> SessionRepo {
+        let config = Arc::new(SaTokenConfig {
+            timeout,
+            token_style: TokenStyle::Uuid,
+            ..Default::default()
+        });
+        let dao = Arc::new(SaTokenDao::new(
+            Arc::new(MemoryStorage::new()),
+            config.clone(),
+        ));
+        SessionRepo::new(dao, config)
+    }
+
+    fn ns(login_id: &str) -> AccountNs {
+        let id = LoginId::try_new(login_id).expect("login id");
+        SaKeys::account_ns("default", &id)
+    }
+
+    #[tokio::test]
+    async fn update_min_timeout_extends_not_shortens() {
+        let r = repo(10);
+        let ns = ns("u1");
+        let session = SaSession::new("u1");
+        r.save_by_ns_with_ttl(&ns, &session, Some(Duration::from_secs(10)))
+            .await
+            .expect("create");
+
+        r.update_min_timeout(&ns, Some(Duration::from_secs(3600)))
+            .await
+            .expect("extend");
+        let key = r.account_session_key(&ns).expect("key");
+        let extended = r
+            .dao
+            .ttl(&key)
+            .await
+            .expect("ttl")
+            .expect("finite")
+            .as_secs();
+        assert!(
+            (3590..=3600).contains(&extended),
+            "must extend to ~3600, got {extended}"
+        );
+
+        r.update_min_timeout(&ns, Some(Duration::from_secs(10)))
+            .await
+            .expect("no shorten");
+        let kept = r
+            .dao
+            .ttl(&key)
+            .await
+            .expect("ttl")
+            .expect("finite")
+            .as_secs();
+        assert!(
+            (3580..=3600).contains(&kept),
+            "must not shorten, got {kept}"
+        );
+    }
+
+    #[tokio::test]
+    async fn update_min_timeout_missing_is_noop() {
+        let r = repo(10);
+        let ns = ns("missing");
+        r.update_min_timeout(&ns, Some(Duration::from_secs(3600)))
+            .await
+            .expect("noop");
+        let key = r.account_session_key(&ns).expect("key");
+        assert!(!r.dao.exists(&key).await.expect("exists"));
+    }
+
+    #[tokio::test]
+    async fn save_by_ns_keeps_ttl_when_key_exists() {
+        let r = repo(3600);
+        let ns = ns("u2");
+        let session = SaSession::new("u2");
+        r.save_by_ns_with_ttl(&ns, &session, Some(Duration::from_secs(10)))
+            .await
+            .expect("create");
+        r.save_by_ns(&ns, &session).await.expect("overwrite");
+        let key = r.account_session_key(&ns).expect("key");
+        let ttl = r
+            .dao
+            .ttl(&key)
+            .await
+            .expect("ttl")
+            .expect("finite")
+            .as_secs();
+        assert!(
+            (1..=10).contains(&ttl),
+            "KEEPTTL must not reset to default 3600, got {ttl}"
+        );
+    }
+
+    #[tokio::test]
+    async fn add_terminal_with_ttl_creates_with_login_ttl() {
+        let r = repo(10);
+        let ns = ns("u3");
+        r.add_terminal_with_ttl(
+            &ns,
+            SaTerminalInfo::new("tok", "PC"),
+            Some(Duration::from_secs(3600)),
+        )
+        .await
+        .expect("add");
+        let key = r.account_session_key(&ns).expect("key");
+        let ttl = r
+            .dao
+            .ttl(&key)
+            .await
+            .expect("ttl")
+            .expect("finite")
+            .as_secs();
+        assert!(
+            (3590..=3600).contains(&ttl),
+            "first terminal must use login ttl, got {ttl}"
+        );
     }
 }

@@ -11,6 +11,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::Duration;
 
 use chrono::{Duration as ChronoDuration, Utc};
 
@@ -268,7 +269,7 @@ impl AuthService {
 
         if let Some(raw) = snapshot {
             let ttl = if nonce_timeout > 0 {
-                Some(std::time::Duration::from_secs(nonce_timeout as u64))
+                Some(Duration::from_secs(nonce_timeout as u64))
             } else {
                 None
             };
@@ -346,9 +347,10 @@ impl AuthService {
     ) -> SaTokenResult<()> {
         let token = token_info.token.as_str();
         let keys = self.dao.keys();
+        let login_ttl = self.token_repo.ttl_for(token_info);
 
         self.token_repo
-            .append_index(login_type, login_id, token)
+            .append_index_with_ttl(login_type, login_id, token, login_ttl)
             .await?;
         compensator.on_fail_list_remove(keys.login_token_index(login_type, login_id), token);
 
@@ -357,18 +359,22 @@ impl AuthService {
             .map_err(|e| SaTokenError::ConfigError(e.to_string()))?;
         match self.session_repo.snapshot_account_session(ns).await? {
             Some(old_raw) => {
-                compensator.on_fail_restore(session_key, old_raw, self.dao.default_ttl())
+                let remaining = self.dao.ttl(&session_key).await?;
+                compensator.on_fail_restore(session_key, old_raw, remaining);
             }
             None => compensator.on_fail_delete(session_key),
         }
+        self.session_repo.update_min_timeout(ns, login_ttl).await?;
         let mut terminal = SaTerminalInfo::new(token, req.effective_device().unwrap_or(""));
         if let Some(extra) = req.extra_data.clone() {
             terminal = terminal.with_extra_data(extra);
         }
-        self.session_repo.add_terminal(ns, terminal).await?;
+        self.session_repo
+            .add_terminal_with_ttl(ns, terminal, login_ttl)
+            .await?;
 
         self.token_repo
-            .save_token_id_mapping(token, login_type, login_id)
+            .save_token_id_mapping_with_ttl(token, login_type, login_id, login_ttl)
             .await?;
         compensator.on_fail_delete(keys.token_id_mapping(token));
 
@@ -377,7 +383,7 @@ impl AuthService {
 
         if self.config.right_now_create_token_session {
             self.session_repo
-                .create_token_session(&token_info.token)
+                .create_token_session_with_ttl(&token_info.token, login_ttl)
                 .await?;
             compensator.on_fail_delete(keys.token_session(token));
         }
@@ -396,8 +402,15 @@ impl AuthService {
             compensator.on_fail_delete(keys.refresh(rt));
         }
 
-        self.commit_login_mapping(login_type, login_id, token, mapping_before, compensator)
-            .await
+        self.commit_login_mapping(
+            login_type,
+            login_id,
+            token,
+            mapping_before,
+            login_ttl,
+            compensator,
+        )
+        .await
     }
 
     async fn commit_login_mapping(
@@ -406,23 +419,24 @@ impl AuthService {
         login_id: &str,
         token: &str,
         mapping_before: Option<&str>,
+        ttl: Option<Duration>,
         compensator: &mut LoginCompensator,
     ) -> SaTokenResult<()> {
         let key = self.dao.keys().login_token(login_type, login_id);
 
         if self.config.is_concurrent {
             self.token_repo
-                .save_login_mapping(login_type, login_id, token)
+                .save_login_mapping_with_ttl(login_type, login_id, token, ttl)
                 .await?;
         } else {
             let swapped = self
                 .token_repo
-                .cas_login_mapping(login_type, login_id, mapping_before, token)
+                .cas_login_mapping_with_ttl(login_type, login_id, mapping_before, token, ttl)
                 .await?;
             if !swapped {
                 let swapped_absent = self
                     .token_repo
-                    .cas_login_mapping(login_type, login_id, None, token)
+                    .cas_login_mapping_with_ttl(login_type, login_id, None, token, ttl)
                     .await?;
                 if !swapped_absent {
                     tracing::warn!(
@@ -776,7 +790,8 @@ impl AuthService {
         self.get_token_info(token).await.is_ok()
     }
 
-    /// 手动续期到指定秒数（修 B1-29：只写一次存储）。
+    /// 手动续期到指定秒数（token 体、映射、Token-Session、账号 Session）。
+    /// Renew to an explicit lifetime: body, mapping, token-session, account session.
     pub async fn renew_timeout(
         &self,
         token: &TokenValue,
@@ -787,14 +802,25 @@ impl AuthService {
         info.update_active_time();
         let ttl = if timeout_seconds > 0 {
             info.expire_time = Some(Utc::now() + ChronoDuration::seconds(timeout_seconds));
-            Some(std::time::Duration::from_secs(timeout_seconds as u64))
+            Some(Duration::from_secs(timeout_seconds as u64))
         } else {
             info.expire_time = None;
             None
         };
 
-        let key = self.dao.keys().token_info(token.as_str());
-        self.dao.set_object(&key, &info, ttl).await?;
+        self.token_repo.save_token_info(&info).await?;
+
+        let map_key = self.dao.keys().token_id_mapping(token.as_str());
+        self.write_key_ttl(&map_key, ttl).await?;
+
+        let ts_key = self.session_repo.token_session_key(token.as_str());
+        if self.dao.exists(&ts_key).await? {
+            self.write_key_ttl(&ts_key, ttl).await?;
+        }
+
+        if let Ok(ns) = Self::account_ns(info.login_type.as_ref(), info.login_id.as_ref()) {
+            self.session_repo.update_min_timeout(&ns, ttl).await?;
+        }
 
         let event =
             SaTokenEvent::renew_timeout(info.login_id.as_ref(), token.as_str(), timeout_seconds)
@@ -802,6 +828,20 @@ impl AuthService {
         self.event_bus.publish(event).await;
 
         Ok(())
+    }
+
+    /// Set remaining TTL on a scalar key; `None` rewrites as permanent.
+    /// 写入标量键剩余 TTL；`None` 改写为永久。
+    async fn write_key_ttl(&self, key: &str, ttl: Option<Duration>) -> SaTokenResult<()> {
+        match ttl {
+            Some(d) => self.dao.expire(key, d).await,
+            None => {
+                let Some(raw) = self.dao.get_string(key).await? else {
+                    return Ok(());
+                };
+                self.dao.set_string(key, &raw, None).await
+            }
+        }
     }
 
     async fn enforce_max_login_count(&self, login_type: &str, login_id: &str) -> SaTokenResult<()> {
