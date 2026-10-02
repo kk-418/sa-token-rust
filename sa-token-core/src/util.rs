@@ -265,7 +265,10 @@ impl StpUtil {
         tracing::debug!("开始执行 logout，token: {}", token);
         let result = Self::try_get_manager()?.logout(token).await;
         match &result {
-            Ok(_) => tracing::debug!("logout 执行成功，token: {}", token),
+            Ok(_) => {
+                tracing::debug!("logout 执行成功，token: {}", token);
+                Self::clear_current_auth_if_token_matches(token);
+            }
             Err(e) => tracing::debug!("logout 执行失败，token: {}, 错误: {}", token, e),
         }
         result
@@ -409,10 +412,25 @@ impl StpUtil {
 
         let result = Self::logout(&token).await;
         match &result {
-            Ok(_) => tracing::debug!("logout_current 执行成功，token: {}", token),
+            Ok(_) => {
+                tracing::debug!("logout_current 执行成功，token: {}", token);
+                Self::clear_current_auth_if_token_matches(&token);
+            }
             Err(e) => tracing::debug!("logout_current 执行失败，token: {}, 错误: {}", token, e),
         }
         result
+    }
+
+    /// Clear request-context auth when it still holds `token`.
+    /// 若当前上下文 token 与即将失效的 token 相同，则清空 login_id / token_info。
+    fn clear_current_auth_if_token_matches(token: &TokenValue) {
+        let _ = SaTokenContext::with_current_mut(|inner| {
+            if inner.token.as_ref() == Some(token) {
+                inner.login_id = None;
+                inner.token_info = None;
+                inner.token = None;
+            }
+        });
     }
 
     /// 检查当前会话是否登录（同步弱校验：仅看上下文是否有 token 字符串，不查存储）
@@ -461,7 +479,26 @@ impl StpUtil {
             }
         }
         let token = Self::get_token_value()?;
+        if let Some(ctx) = SaTokenContext::get_current() {
+            if let Some(cached_id) = ctx.login_id() {
+                if ctx.token().as_ref() == Some(&token) {
+                    return Ok(cached_id);
+                }
+            }
+        }
         Self::get_login_id(&token).await
+    }
+
+    /// Current login id or `None` (Java `StpUtil.getLoginIdDefaultNull()`).
+    /// 当前 login_id；未登录返回 `None`（对齐 Java `getLoginIdDefaultNull`）。
+    pub async fn get_login_id_current_opt() -> Option<String> {
+        Self::get_login_id_as_string().await.ok()
+    }
+
+    /// Current login type (Java `StpUtil.getLoginType()`).
+    /// 当前账号体系（对齐 Java `StpUtil.getLoginType()`）。
+    pub fn get_login_type() -> String {
+        Self::resolve_login_type().into_owned()
     }
 
     /// 获取当前会话的 login_id（i64 类型，无参数）
@@ -675,6 +712,32 @@ impl StpUtil {
         let mut session = Self::get_session(login_id).await?;
         session.delete(key);
         Self::save_session(&session).await
+    }
+
+    /// Set a session value for the current account (Java `getSession().set`).
+    /// 为当前账号写入 Session 键值（对齐 Java `getSession().set`）。
+    pub async fn set_session_value_current<T: serde::Serialize>(
+        key: &str,
+        value: T,
+    ) -> SaTokenResult<()> {
+        let login_id = Self::get_login_id_as_string().await?;
+        Self::set_session_value(login_id, key, value).await
+    }
+
+    /// Get a session value for the current account (Java `getSession().get`).
+    /// 读取当前账号 Session 键值（对齐 Java `getSession().get`）。
+    pub async fn get_session_value_current<T: serde::de::DeserializeOwned>(
+        key: &str,
+    ) -> SaTokenResult<Option<T>> {
+        let login_id = Self::get_login_id_as_string().await?;
+        Self::get_session_value(login_id, key).await
+    }
+
+    /// Remove a session key for the current account (Java `getSession().delete`).
+    /// 删除当前账号 Session 键（对齐 Java `getSession().delete`）。
+    pub async fn remove_session_value_current(key: &str) -> SaTokenResult<()> {
+        let login_id = Self::get_login_id_as_string().await?;
+        Self::remove_session_value(login_id, key).await
     }
 
     // ==================== 搜索 | Search ====================
@@ -998,6 +1061,36 @@ impl StpUtil {
             .check_any_permission(&login_type, &login_id.to_login_id(), permissions)
             .await
     }
+
+    /// Current-user permission check (Java `StpUtil.hasPermission`).
+    /// 当前用户是否拥有权限；未登录返回 `false`。
+    pub async fn has_permission_current(permission: &str) -> bool {
+        let Ok(login_id) = Self::get_login_id_as_string().await else {
+            return false;
+        };
+        Self::has_permission(login_id, permission).await
+    }
+
+    /// Current-user permission check returning `Err` (Java `StpUtil.checkPermission`).
+    /// 校验当前用户权限；未登录返回 `NotLogin`。
+    pub async fn check_permission_current(permission: &str) -> SaTokenResult<()> {
+        let login_id = Self::get_login_id_as_string().await?;
+        Self::check_permission(login_id, permission).await
+    }
+
+    /// Current-user AND permission check (Java `StpUtil.checkPermissionAnd`).
+    /// 校验当前用户全部权限；未登录返回 `NotLogin`。
+    pub async fn check_permissions_and_current(permissions: &[&str]) -> SaTokenResult<()> {
+        let login_id = Self::get_login_id_as_string().await?;
+        Self::check_all_permissions(login_id, permissions).await
+    }
+
+    /// Current-user OR permission check (Java `StpUtil.checkPermissionOr`).
+    /// 校验当前用户任一权限；未登录返回 `NotLogin`。
+    pub async fn check_permissions_or_current(permissions: &[&str]) -> SaTokenResult<()> {
+        let login_id = Self::get_login_id_as_string().await?;
+        Self::check_any_permission(login_id, permissions).await
+    }
 }
 
 // ==================== 角色管理 ====================
@@ -1218,6 +1311,36 @@ impl StpUtil {
             .authz_service()
             .check_any_role(&login_type, &login_id.to_login_id(), roles)
             .await
+    }
+
+    /// Current-user role check (Java `StpUtil.hasRole`).
+    /// 当前用户是否拥有角色；未登录返回 `false`。
+    pub async fn has_role_current(role: &str) -> bool {
+        let Ok(login_id) = Self::get_login_id_as_string().await else {
+            return false;
+        };
+        Self::has_role(login_id, role).await
+    }
+
+    /// Current-user role check returning `Err` (Java `StpUtil.checkRole`).
+    /// 校验当前用户角色；未登录返回 `NotLogin`。
+    pub async fn check_role_current(role: &str) -> SaTokenResult<()> {
+        let login_id = Self::get_login_id_as_string().await?;
+        Self::check_role(login_id, role).await
+    }
+
+    /// Current-user AND role check (Java `StpUtil.checkRoleAnd`).
+    /// 校验当前用户全部角色；未登录返回 `NotLogin`。
+    pub async fn check_roles_and_current(roles: &[&str]) -> SaTokenResult<()> {
+        let login_id = Self::get_login_id_as_string().await?;
+        Self::check_all_roles(login_id, roles).await
+    }
+
+    /// Current-user OR role check (Java `StpUtil.checkRoleOr`).
+    /// 校验当前用户任一角色；未登录返回 `NotLogin`。
+    pub async fn check_roles_or_current(roles: &[&str]) -> SaTokenResult<()> {
+        let login_id = Self::get_login_id_as_string().await?;
+        Self::check_any_role(login_id, roles).await
     }
 }
 

@@ -5,7 +5,7 @@ mod common;
 use common::setup;
 use sa_token_core::config::TokenStyle;
 use sa_token_core::token::TokenValue;
-use sa_token_core::{SaTokenConfig, SaTokenContext, StpUtil};
+use sa_token_core::{SaTokenConfig, SaTokenContext, SaTokenError, StpUtil};
 use serial_test::serial;
 
 fn init_stp() {
@@ -104,4 +104,117 @@ fn test_token_style_jwt_alias() {
 #[test]
 fn test_cookie_auto_fill_prefix_default_false() {
     assert!(!SaTokenConfig::default().cookie_auto_fill_prefix);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_current_user_permission_role_api() {
+    init_stp();
+    let id = setup::unique_login_id("jp_cur");
+    let token = StpUtil::login(&id).await.expect("login");
+    StpUtil::set_permissions(&id, vec!["p".into()])
+        .await
+        .expect("set_permissions");
+    StpUtil::set_roles(&id, vec!["admin".into()])
+        .await
+        .expect("set_roles");
+    let ctx = SaTokenContext::builder()
+        .token(token)
+        .login_id(id.clone())
+        .build();
+
+    SaTokenContext::scope(ctx, async {
+        assert!(StpUtil::has_permission_current("p").await);
+        assert!(!StpUtil::has_permission_current("nope").await);
+        StpUtil::check_role_current("admin")
+            .await
+            .expect("check_role_current admin");
+        let denied = StpUtil::check_role_current("guest").await;
+        assert!(matches!(
+            denied,
+            Err(SaTokenError::RoleDenied(ref r)) if r == "guest"
+        ));
+        assert_eq!(StpUtil::get_login_type(), "default");
+        assert_eq!(
+            StpUtil::get_login_id_current_opt().await.as_deref(),
+            Some(id.as_str())
+        );
+    })
+    .await;
+
+    assert_eq!(StpUtil::get_login_id_current_opt().await, None);
+    assert!(!StpUtil::has_permission_current("p").await);
+}
+
+#[tokio::test]
+#[serial]
+async fn test_session_value_current() {
+    init_stp();
+    let id = setup::unique_login_id("jp_sv");
+    let token = StpUtil::login(&id).await.expect("login");
+    let ctx = SaTokenContext::builder()
+        .token(token)
+        .login_id(id.clone())
+        .build();
+
+    SaTokenContext::scope(ctx, async {
+        StpUtil::set_session_value_current("theme", "dark")
+            .await
+            .expect("set_session_value_current");
+        let theme: Option<String> = StpUtil::get_session_value_current("theme")
+            .await
+            .expect("get_session_value_current");
+        assert_eq!(theme.as_deref(), Some("dark"));
+
+        StpUtil::remove_session_value_current("theme")
+            .await
+            .expect("remove_session_value_current");
+        let theme: Option<String> = StpUtil::get_session_value_current("theme")
+            .await
+            .expect("get after remove");
+        assert_eq!(theme, None);
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_get_login_id_as_string_uses_context_cache() {
+    init_stp();
+    let id = setup::unique_login_id("jp_cache");
+    let token = StpUtil::login(&id).await.expect("login");
+    let ctx = SaTokenContext::builder()
+        .token(token)
+        .login_id("cached")
+        .build();
+
+    SaTokenContext::scope(ctx, async {
+        let got = StpUtil::get_login_id_as_string()
+            .await
+            .expect("cached login_id");
+        assert_eq!(got, "cached");
+    })
+    .await;
+}
+
+#[tokio::test]
+#[serial]
+async fn test_logout_current_clears_context_login_id() {
+    init_stp();
+    let id = setup::unique_login_id("jp_lo");
+    let token = StpUtil::login(&id).await.expect("login");
+    let ctx = SaTokenContext::builder()
+        .token(token)
+        .login_id(id.clone())
+        .build();
+
+    SaTokenContext::scope(ctx, async {
+        assert_eq!(
+            StpUtil::get_login_id_current_opt().await.as_deref(),
+            Some(id.as_str())
+        );
+        StpUtil::logout_current().await.expect("logout_current");
+        assert_eq!(StpUtil::get_login_id_current_opt().await, None);
+    })
+    .await;
 }
