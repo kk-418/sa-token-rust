@@ -791,6 +791,20 @@ impl SaKeys {
         self.build_global(&cat, value_digest, None)
     }
 
+    /// Raw Session key (Java `SaRawSessionUtil`).
+    /// Raw Session 键：ThreeSegment `{root}raw-session:{type}:{id}`。
+    #[inline]
+    pub fn raw_session(&self, session_type: &str, value_id: &str) -> String {
+        self.build_global("raw-session", &format!("{session_type}:{value_id}"), None)
+    }
+
+    /// Application-scope variable key (Java `SaApplication`).
+    /// 应用全局变量键：`{root}var:{key}`。
+    #[inline]
+    pub fn application_var(&self, key: &str) -> String {
+        self.build_global("var", key, None)
+    }
+
     // ==================== Scan & Parse (A3-11, A3-12) | 扫描与解析（A3-11、A3-12） ====================
 
     /// Returns the key prefix for a category, layout-aware (A3-11)
@@ -1047,5 +1061,16 @@ mod tests {
             .build_config();
         let keys = SaKeys::from_config(&config);
         assert_eq!(keys.token_info("x"), "app:token:x");
+    }
+
+    #[test]
+    fn raw_session_and_application_var_keys() {
+        let keys = SaKeys::new("sa:");
+        assert_eq!(
+            keys.raw_session("custom", "role-1001"),
+            "sa:raw-session:custom:role-1001"
+        );
+        assert_eq!(keys.raw_session("role", "1001"), "sa:raw-session:role:1001");
+        assert_eq!(keys.application_var("foo"), "sa:var:foo");
     }
 }

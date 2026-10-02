@@ -21,6 +21,7 @@
 //! ```
 
 pub mod api_key;
+pub mod application;
 pub mod cleanup;
 pub mod codec;
 pub mod config;
@@ -29,6 +30,7 @@ pub mod dao;
 pub mod disable;
 pub mod distributed;
 pub mod event;
+pub mod firewall;
 pub mod http_basic;
 pub mod http_digest;
 pub mod keys;
@@ -71,6 +73,12 @@ pub use context::{
 };
 pub use dao::SaTokenDao;
 pub use error::{SaTokenError, SaTokenResult};
+pub use firewall::{
+    BlackPathHook, DEFAULT_DANGER_CHARACTERS, DEFAULT_HTTP_METHODS, DirectoryTraversalHook,
+    FirewallHook, FirewallRequest, HeaderHook, HostHook, HttpMethodHook, ParameterHook,
+    PathBannedCharacterHook, PathDangerCharacterHook, SaFirewallStrategy, WhitePathHook,
+    is_path_valid,
+};
 pub use keys::{
     AccountNs, KeyError, LOGIN_TYPE_DEFAULT, LOGIN_TYPE_LOGIN, LOGIN_TYPE_SSO,
     LOGIN_TYPE_SSO_CLIENT, SaKeyLayout, SaKeys,
@@ -92,6 +100,7 @@ pub use api_key::{
     ApiKeyManager, ApiKeyModel, DEFAULT_NAMESPACE as API_KEY_DEFAULT_NAMESPACE,
     DEFAULT_PREFIX as API_KEY_DEFAULT_PREFIX, DEFAULT_TIMEOUT as API_KEY_DEFAULT_TIMEOUT,
 };
+pub use application::SaApplication;
 pub use cleanup::{BackgroundCleanupTask, CleanupConfig};
 pub use disable::{
     DEFAULT_DISABLE_LEVEL, DEFAULT_DISABLE_SERVICE, MIN_DISABLE_LEVEL, NOT_DISABLE_LEVEL,
@@ -123,8 +132,7 @@ pub use router::{
     need_auth, run_auth_flow,
 };
 pub use safe::{DEFAULT_SAFE_SERVICE, SAFE_AUTH_VALUE};
-pub use session::SaSession;
-pub use session::SaTerminalInfo;
+pub use session::{RawSession, SaSession, SaSessionCustom, SaTerminalInfo};
 pub use sign::{RequestSign, map_sign_err_to_sso};
 pub use sso::{
     CheckTicketResult, LocalTicketChecker, NoopSloNotifier, SloNotifier, SsoClient, SsoConfig,

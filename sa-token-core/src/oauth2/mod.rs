@@ -18,6 +18,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::config::SaTokenConfig;
+use crate::context::SaTokenContext;
 use crate::dao::SaTokenDao;
 use crate::error::{SaTokenError, SaTokenResult};
 use crate::manager::SaTokenManager;
@@ -683,5 +684,45 @@ impl OAuth2Manager {
             self.generate_authorization_code(client_id, user_id, redirect_uri, scope, pkce, state);
         self.store_authorization_code(&code).await?;
         Ok(code)
+    }
+
+    /// Verify the access token then require every given scope (Java `checkAccessTokenScope`).
+    /// 校验访问令牌后要求具备全部指定 scope。
+    pub async fn check_scope(
+        &self,
+        access_token: &str,
+        required: &[&str],
+    ) -> SaTokenResult<OAuth2TokenInfo> {
+        let info = self.verify_access_token(access_token).await?;
+        for scope in required {
+            let granted = info
+                .scope
+                .iter()
+                .any(|s| s == scope || s.split_whitespace().any(|part| part == *scope));
+            if !granted {
+                return Err(SaTokenError::OAuth2InvalidScope);
+            }
+        }
+        Ok(info)
+    }
+
+    /// Current request's OAuth2 access token (Java `SaOAuth2Util.currentAccessToken`).
+    ///
+    /// Reads `Authorization: Bearer …` from `auth_meta`, then falls back to the context token.
+    /// 当前请求的 OAuth2 访问令牌：先读 Bearer，再回落上下文 token。
+    pub fn current_access_token() -> Option<String> {
+        let ctx = SaTokenContext::try_current()?;
+        let meta = ctx.auth_meta();
+        if let Some(auth) = meta.authorization.as_deref()
+            && let Some(token) = auth
+                .strip_prefix("Bearer ")
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+        {
+            return Some(token.to_string());
+        }
+        ctx.token()
+            .map(|t| t.as_str().trim().to_string())
+            .filter(|s| !s.is_empty())
     }
 }

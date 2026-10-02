@@ -47,6 +47,11 @@
 //!     Ok("Basic ok")
 //! }
 //!
+//! #[sa_check_http_digest("admin:secret")]
+//! async fn digest_protected() -> SaTokenResult<&'static str> {
+//!     Ok("Digest ok")
+//! }
+//!
 //! #[sa_check_same_token]
 //! async fn internal_call() -> SaTokenResult<&'static str> {
 //!     Ok("Same-token ok")
@@ -66,8 +71,8 @@ mod utils;
 
 use macros::{
     check_disable::sa_check_disable_impl, check_http_basic::sa_check_http_basic_impl,
-    check_login::sa_check_login_impl, check_or::sa_check_or_impl,
-    check_permission::sa_check_permission_impl,
+    check_http_digest::sa_check_http_digest_impl, check_login::sa_check_login_impl,
+    check_or::sa_check_or_impl, check_permission::sa_check_permission_impl,
     check_permissions_and::sa_check_permissions_and_impl,
     check_permissions_or::sa_check_permissions_or_impl, check_role::sa_check_role_impl,
     check_roles_and::sa_check_roles_and_impl, check_roles_or::sa_check_roles_or_impl,
@@ -152,6 +157,17 @@ pub fn sa_check_terminal(attr: TokenStream, item: TokenStream) -> TokenStream {
 #[proc_macro_attribute]
 pub fn sa_check_http_basic(attr: TokenStream, item: TokenStream) -> TokenStream {
     sa_check_http_basic_impl(attr, item)
+}
+
+/// HTTP Digest check. | HTTP Digest 检查。
+///
+/// Forms | 形式:
+/// - `#[sa_check_http_digest]`
+/// - `#[sa_check_http_digest("user:pass")]`
+/// - `#[sa_check_http_digest(username = "user", password = "pass", realm = "Sa-Token")]`
+#[proc_macro_attribute]
+pub fn sa_check_http_digest(attr: TokenStream, item: TokenStream) -> TokenStream {
+    sa_check_http_digest_impl(attr, item)
 }
 
 /// Same-Token check for internal calls. | 内部调用 Same-Token 检查。

@@ -398,6 +398,20 @@ impl ApiKeyManager {
         Ok(self.check(api_key).await?.login_id)
     }
 
+    /// `check` then require the key to belong to `login_id` (Java `checkApiKeyLoginId`).
+    /// 先走现有校验，再核对归属 login_id。
+    pub async fn check_login_id(
+        &self,
+        api_key: &str,
+        login_id: &str,
+    ) -> SaTokenResult<ApiKeyModel> {
+        let model = self.check(api_key).await?;
+        if model.login_id != login_id {
+            return Err(SaTokenError::PermissionDeniedDetail(login_id.to_string()));
+        }
+        Ok(model)
+    }
+
     /// Read the raw key from request meta (Java `readApiKeyValue`).
     ///
     /// Order: `params[namespace]` → headers (case-insensitive) → Basic `Authorization`

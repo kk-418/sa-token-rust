@@ -222,3 +222,26 @@ async fn test_redirect_uri_exact_match() {
     assert!(!mgr.validate_redirect_uri(&client, "https://app.example/cb/extra"));
     assert!(!mgr.validate_redirect_uri(&client, "https://evil.example/cb"));
 }
+
+#[tokio::test]
+async fn test_check_scope_success_and_missing() {
+    let mgr = OAuth2Manager::new(setup::memory_storage()).with_ttl(60, 3600, 86400);
+    let token = mgr
+        .generate_access_token("app", "user1", vec!["read".into(), "write".into()])
+        .await
+        .expect("issue");
+    let info = mgr
+        .check_scope(&token.access_token, &["read"])
+        .await
+        .expect("has read");
+    assert_eq!(info.user_id, "user1");
+    assert!(info.scope.iter().any(|s| s == "read"));
+    let err = mgr
+        .check_scope(&token.access_token, &["read", "admin"])
+        .await
+        .expect_err("missing admin");
+    assert!(
+        matches!(err, SaTokenError::OAuth2InvalidScope),
+        "missing scope, got {err:?}"
+    );
+}

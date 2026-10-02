@@ -6,7 +6,9 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+pub mod raw;
 pub mod terminal;
+pub use raw::{RawSession, SaSessionCustom};
 pub use terminal::SaTerminalInfo;
 
 /// Session 对象 | Session Object
@@ -47,6 +49,11 @@ pub struct SaSession {
     #[serde(default)]
     pub history_terminal_count: i32,
 
+    /// Session type (account / token / custom / raw, …). Empty on legacy JSON.
+    /// 会话类型；旧 JSON 缺省为空串。
+    #[serde(default)]
+    pub session_type: String,
+
     /// 数据存储 | Data storage
     #[serde(flatten)]
     pub data: HashMap<String, serde_json::Value>,
@@ -60,8 +67,16 @@ impl SaSession {
             create_time: Utc::now(),
             terminal_list: Vec::new(),
             history_terminal_count: 0,
+            session_type: String::new(),
             data: HashMap::new(),
         }
+    }
+
+    /// Set session type (Java `SaSession#setType`).
+    /// 设置会话类型（对齐 Java `SaSession#setType`）。
+    pub fn with_type(mut self, t: impl Into<String>) -> Self {
+        self.session_type = t.into();
+        self
     }
 
     /// 设置值 | Set Value
@@ -199,6 +214,17 @@ impl SaSession {
     pub fn terminal_count(&self) -> usize {
         self.terminal_list.len()
     }
+
+    /// Whether `device_id` matches any terminal in this session.
+    /// 指定设备 id 是否为可信任设备（对齐 Java `SaSession#isTrustDeviceId`）。
+    pub fn is_trust_device_id(&self, device_id: &str) -> bool {
+        if device_id.is_empty() {
+            return false;
+        }
+        self.terminal_list
+            .iter()
+            .any(|t| t.device_id.as_deref() == Some(device_id))
+    }
 }
 
 #[cfg(test)]
@@ -245,5 +271,19 @@ mod tests {
         let session: SaSession = serde_json::from_str(json).unwrap();
         assert!(session.terminal_list.is_empty());
         assert_eq!(session.history_terminal_count, 0);
+        assert!(session.session_type.is_empty());
+    }
+
+    #[test]
+    fn test_is_trust_device_id() {
+        let mut session = SaSession::new("u1").with_type("account");
+        assert!(!session.is_trust_device_id(""));
+        assert!(!session.is_trust_device_id("dev-1"));
+        session.add_terminal(SaTerminalInfo::new("t1", "PC").with_device_id("dev-1"));
+        session.add_terminal(SaTerminalInfo::new("t2", "APP"));
+        assert!(session.is_trust_device_id("dev-1"));
+        assert!(!session.is_trust_device_id("dev-other"));
+        assert!(!session.is_trust_device_id(""));
+        assert_eq!(session.session_type, "account");
     }
 }

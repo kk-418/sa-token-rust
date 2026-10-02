@@ -181,6 +181,50 @@ impl TempTokenManager {
         }
         self.dao.delete(&key).await
     }
+
+    /// Remaining TTL in seconds (Java `SaTempUtil.getTimeout`).
+    ///
+    /// Missing key → `-2`; exists with no TTL → `-1`; otherwise remaining seconds.
+    /// 剩余有效期（秒）：键不存在 `-2`；存在且无 TTL `-1`；否则为剩余秒数。
+    pub async fn get_timeout(&self, namespace: &str, token: &str) -> SaTokenResult<i64> {
+        let key = self.dao.keys().temp_token(namespace, token);
+        if !self.dao.exists(&key).await? {
+            return Ok(-2);
+        }
+        match self.dao.ttl(&key).await? {
+            None => Ok(-1),
+            Some(d) => Ok(d.as_secs() as i64),
+        }
+    }
+
+    /// Persist a caller-chosen token (Java `SaTempUtil.saveToken`); does not randomize.
+    /// 用调用方给定的 token 写入，不随机生成。
+    pub async fn save(
+        &self,
+        namespace: &str,
+        token: &str,
+        value: serde_json::Value,
+        timeout_secs: i64,
+    ) -> SaTokenResult<()> {
+        if namespace.is_empty() {
+            return Err(SaTokenError::ConfigError(
+                "temp token namespace must not be empty".into(),
+            ));
+        }
+        if token.is_empty() {
+            return Err(SaTokenError::ConfigError(
+                "temp token must not be empty".into(),
+            ));
+        }
+        let ttl = Self::ttl(timeout_secs)?;
+        let record = TempTokenRecord {
+            value,
+            namespace: namespace.to_string(),
+            expire_at: Self::expire_at(timeout_secs),
+        };
+        let key = self.dao.keys().temp_token(namespace, token);
+        self.dao.set_object(&key, &record, ttl).await
+    }
 }
 
 /// StpUtil helpers using the process-global manager.
@@ -210,5 +254,27 @@ pub async fn delete_default(token: &str) -> SaTokenResult<()> {
     let manager = StpUtil::try_get_manager()?;
     TempTokenManager::new(manager.dao().clone())
         .delete(DEFAULT_NAMESPACE, token)
+        .await
+}
+
+/// Remaining TTL of a temp token in the default namespace.
+/// 默认命名空间下临时令牌的剩余 TTL。
+pub async fn get_timeout_default(token: &str) -> SaTokenResult<i64> {
+    let manager = StpUtil::try_get_manager()?;
+    TempTokenManager::new(manager.dao().clone())
+        .get_timeout(DEFAULT_NAMESPACE, token)
+        .await
+}
+
+/// Save a caller-chosen temp token in the default namespace.
+/// 在默认命名空间写入调用方指定的临时令牌。
+pub async fn save_default(
+    token: &str,
+    value: serde_json::Value,
+    timeout_secs: i64,
+) -> SaTokenResult<()> {
+    let manager = StpUtil::try_get_manager()?;
+    TempTokenManager::new(manager.dao().clone())
+        .save(DEFAULT_NAMESPACE, token, value, timeout_secs)
         .await
 }

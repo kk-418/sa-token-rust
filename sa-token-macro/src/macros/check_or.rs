@@ -143,6 +143,18 @@ pub(crate) fn sa_check_or_impl(attr: TokenStream, item: TokenStream) -> TokenStr
                     }
                 });
             }
+            "digest" => {
+                let account = check.value.value();
+                let (user, pass) = match account.split_once(':') {
+                    Some((u, p)) => (u.to_string(), p.to_string()),
+                    None => (account, String::new()),
+                };
+                other_branches.push(quote! {
+                    if sa_token_core::http_digest::check_user(#user, #pass).is_ok() {
+                        __sa_or_passed = true;
+                    }
+                });
+            }
             "same_token" => {
                 other_branches.push(quote! {
                     if sa_token_core::same_token::check_current_request().await.is_ok() {
@@ -154,7 +166,7 @@ pub(crate) fn sa_check_or_impl(attr: TokenStream, item: TokenStream) -> TokenStr
                 return syn::Error::new_spanned(
                     &check.kind,
                     format!(
-                        "Unsupported check kind '{}', use login|permission|role|safe|disable|terminal|basic|same_token",
+                        "Unsupported check kind '{}', use login|permission|role|safe|disable|terminal|basic|same_token|digest",
                         other
                     ),
                 )

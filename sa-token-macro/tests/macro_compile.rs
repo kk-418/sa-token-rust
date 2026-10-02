@@ -32,3 +32,28 @@ async fn need_or_auth() -> SaTokenResult<()> {
 async fn need_or_login_or_perm() -> SaTokenResult<()> {
     Ok(())
 }
+
+#[sa_check_http_digest]
+async fn need_digest_default() -> SaTokenResult<()> {
+    Ok(())
+}
+
+#[sa_check_http_digest("user:pass")]
+async fn need_digest_account() -> SaTokenResult<()> {
+    Ok(())
+}
+
+#[sa_check_http_digest(username = "user", password = "pass", realm = "Sa-Token")]
+async fn need_digest_named() -> SaTokenResult<()> {
+    Ok(())
+}
+
+#[sa_check_or(digest = "user:pass")]
+async fn need_or_digest() -> SaTokenResult<()> {
+    Ok(())
+}
+
+#[sa_check_or(basic = "user:pass", digest = "user:pass")]
+async fn need_or_basic_or_digest() -> SaTokenResult<()> {
+    Ok(())
+}

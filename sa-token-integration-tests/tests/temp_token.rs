@@ -61,3 +61,24 @@ async fn test_temp_token_expired_via_clock() {
         Err(SaTokenError::TempTokenExpired)
     ));
 }
+
+#[tokio::test]
+async fn test_temp_token_save_and_get_timeout() {
+    let mgr = setup::fresh_manager();
+    let temp = TempTokenManager::new(mgr.dao().clone());
+    let token = "fixed-temp-token-value";
+    temp.save("ns", token, serde_json::json!("payload"), 120)
+        .await
+        .expect("save");
+    let rec = temp.parse("ns", token).await.expect("parse");
+    assert_eq!(rec.value, serde_json::json!("payload"));
+
+    let ttl = temp.get_timeout("ns", token).await.expect("ttl");
+    assert!(ttl > 0, "timeout>0 must yield remaining seconds, got {ttl}");
+
+    let missing = temp
+        .get_timeout("ns", "does-not-exist")
+        .await
+        .expect("missing ttl");
+    assert_eq!(missing, -2);
+}

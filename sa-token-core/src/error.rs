@@ -306,6 +306,16 @@ pub enum SaTokenError {
     /// Unexpected internal failure | 未预期的内部错误
     #[error("Internal error: {0}")]
     InternalError(String),
+
+    /// Illegal request path (Java `RequestPathInvalidException` / firewall).
+    /// 非法请求路径（对齐 Java `RequestPathInvalidException` / 防火墙）。
+    #[error("Illegal request: {path}")]
+    RequestPathInvalid {
+        /// Request path that failed the check. | 未通过校验的请求路径。
+        path: String,
+        /// Why the path was rejected. | 拒绝原因。
+        reason: String,
+    },
 }
 
 impl From<serde_json::Error> for SaTokenError {
@@ -359,6 +369,29 @@ impl SaTokenError {
             self,
             Self::PermissionDenied | Self::PermissionDeniedDetail(_) | Self::RoleDenied(_)
         )
+    }
+
+    /// Java `SaErrorCode` for this error; unmapped variants return `-1`.
+    /// 对齐 Java `SaErrorCode`；未映射变体返回 `-1`。
+    #[must_use]
+    pub fn code(&self) -> i32 {
+        match self {
+            Self::NotLogin | Self::TokenEmpty | Self::TokenNotFound => 11011,
+            Self::InvalidToken(_) => 11012,
+            Self::TokenExpired => 11013,
+            Self::AccountReplaced => 11014,
+            Self::AccountKickedOut => 11015,
+            Self::TokenInactive => 11016,
+            Self::RoleDenied(_) => 11041,
+            Self::PermissionDenied | Self::PermissionDeniedDetail(_) => 11051,
+            Self::AccountBanned(_) | Self::DisableService { .. } => 11061,
+            Self::NotSafe(_) => 11071,
+            Self::SameTokenInvalid => 10301,
+            Self::BasicAuthFailed { .. } => 10311,
+            Self::DigestAuthFailed { .. } => 10312,
+            Self::RequestPathInvalid { .. } => 12101,
+            _ => -1,
+        }
     }
 }
 

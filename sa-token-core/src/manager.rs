@@ -449,6 +449,11 @@ impl SaTokenManager {
         self.auth_service.kick_out(login_type, login_id).await
     }
 
+    /// 按账号顶下线全部 token | Replace every token of an account
+    pub async fn replaced(&self, login_type: &str, login_id: &str) -> SaTokenResult<()> {
+        self.auth_service.replaced(login_type, login_id).await
+    }
+
     /// 读取并校验 token | Read and validate a token
     pub async fn get_token_info(&self, token: &TokenValue) -> SaTokenResult<TokenInfo> {
         self.auth_service.get_token_info(token).await

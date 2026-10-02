@@ -11,6 +11,8 @@ use serde_json::{Value, json};
 /// Framework-agnostic HTTP status codes (mapped to `StatusCode` in each binding).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SaTokenHttpStatus {
+    /// 400 — illegal request path / firewall.
+    BadRequest = 400,
     /// 401 — unauthenticated or invalid token.
     Unauthorized = 401,
     /// 403 — authenticated but insufficient permissions / roles.
@@ -106,6 +108,14 @@ pub fn http_rejection_for(err: &SaTokenError) -> (SaTokenHttpStatus, Value, Opti
             safe_required_json(service),
             None,
         ),
+        SaTokenError::RequestPathInvalid { .. } => (
+            SaTokenHttpStatus::BadRequest,
+            json!({
+                "code": SaTokenHttpStatus::BadRequest as u16,
+                "message": err.to_string(),
+            }),
+            None,
+        ),
         _ => (
             SaTokenHttpStatus::InternalServerError,
             json!({"code": 500, "message": "internal error"}),
@@ -160,6 +170,17 @@ mod tests {
         assert_eq!(
             status(&SaTokenError::LoginIdNotNumber),
             SaTokenHttpStatus::Unauthorized
+        );
+    }
+
+    #[test]
+    fn request_path_invalid_is_400() {
+        assert_eq!(
+            status(&SaTokenError::RequestPathInvalid {
+                path: "//".into(),
+                reason: "danger".into(),
+            }),
+            SaTokenHttpStatus::BadRequest
         );
     }
 }

@@ -251,6 +251,56 @@ impl SaTokenManager {
         self.untie_disable_with_type(LOGIN_TYPE_DEFAULT, login_id, service)
             .await
     }
+
+    /// Remaining disable seconds: `-1` permanent, `-2` not banned.
+    /// 剩余封禁秒数：`-1` 永久，`-2` 未封禁。
+    pub async fn get_disable_time_with_type(
+        &self,
+        login_type: &str,
+        login_id: &str,
+        service: &str,
+    ) -> SaTokenResult<i64> {
+        let key = self.disable_key_ns(login_type, login_id, service);
+        if !self.dao.exists(&key).await? {
+            return Ok(-2);
+        }
+        match self.dao.ttl(&key).await? {
+            None => Ok(-1),
+            Some(d) => Ok(d.as_secs() as i64),
+        }
+    }
+
+    /// Remaining disable seconds (default login type / service).
+    /// 剩余封禁秒数（默认登录类型与服务）。
+    pub async fn get_disable_time(&self, login_id: &str) -> SaTokenResult<i64> {
+        self.get_disable_time_with_type(LOGIN_TYPE_DEFAULT, login_id, DEFAULT_DISABLE_SERVICE)
+            .await
+    }
+
+    /// Remaining disable seconds for a service (default login type).
+    /// 指定服务的剩余封禁秒数（默认登录类型）。
+    pub async fn get_disable_time_service(
+        &self,
+        login_id: &str,
+        service: &str,
+    ) -> SaTokenResult<i64> {
+        self.get_disable_time_with_type(LOGIN_TYPE_DEFAULT, login_id, service)
+            .await
+    }
+
+    /// Whether the account is banned. Does not throw `AccountBanned`.
+    /// 账号是否被封禁。不抛 `AccountBanned`。
+    pub async fn is_disable(&self, login_id: &str) -> SaTokenResult<bool> {
+        self.is_disable_level(login_id, DEFAULT_DISABLE_SERVICE, MIN_DISABLE_LEVEL)
+            .await
+    }
+
+    /// Whether a service is banned. Does not throw `AccountBanned`.
+    /// 指定服务是否被封禁。不抛 `AccountBanned`。
+    pub async fn is_disable_service(&self, login_id: &str, service: &str) -> SaTokenResult<bool> {
+        self.is_disable_level(login_id, service, MIN_DISABLE_LEVEL)
+            .await
+    }
 }
 
 #[cfg(test)]
@@ -276,6 +326,27 @@ mod tests {
         assert_eq!(
             mgr.get_disable_level("u1", "login").await.unwrap(),
             NOT_DISABLE_LEVEL
+        );
+    }
+
+    #[tokio::test]
+    async fn get_disable_time_and_is_disable() {
+        let mgr = manager();
+        assert_eq!(mgr.get_disable_time("nobody").await.unwrap(), -2);
+        assert!(!mgr.is_disable("nobody").await.unwrap());
+
+        mgr.disable("u1", 60).await.unwrap();
+        let remaining = mgr.get_disable_time("u1").await.unwrap();
+        assert!(remaining > 0 && remaining <= 60, "got {remaining}");
+        assert!(mgr.is_disable("u1").await.unwrap());
+        assert!(mgr.is_disable_service("u1", "login").await.unwrap());
+        assert!(!mgr.is_disable_service("u1", "pay").await.unwrap());
+
+        mgr.disable("u2", -1).await.unwrap();
+        assert_eq!(mgr.get_disable_time("u2").await.unwrap(), -1);
+        assert_eq!(
+            mgr.get_disable_time_service("u2", "login").await.unwrap(),
+            -1
         );
     }
 }

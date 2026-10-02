@@ -155,7 +155,8 @@ impl Default for PathAuthConfig {
 }
 
 use crate::context::{RequestAuthMeta, SaTokenContext};
-use crate::{SaTokenManager, TokenValue, token::TokenInfo};
+use crate::firewall::SaFirewallStrategy;
+use crate::{SaTokenError, SaTokenManager, TokenValue, token::TokenInfo};
 
 /// Authentication result after processing
 /// 处理后的鉴权结果
@@ -286,6 +287,9 @@ pub struct AuthFlowResult {
     pub token: Option<TokenValue>,
     /// Request-scoped context for `StpUtil` / handlers. | 请求级上下文，供 `StpUtil` / 处理器使用。
     pub context: SaTokenContext,
+    /// Firewall rejection (`SaFirewallStrategy::check` failed).
+    /// 防火墙拒绝（`SaFirewallStrategy::check` 失败）。
+    pub firewall_error: Option<SaTokenError>,
 }
 
 impl std::fmt::Debug for AuthFlowResult {
@@ -295,10 +299,10 @@ impl std::fmt::Debug for AuthFlowResult {
 }
 
 impl AuthFlowResult {
-    /// `true` if the binding should respond **401** (path requires auth but token missing or invalid).
-    /// 若路径要求鉴权但 token 缺失或无效，绑定层应返回 **401**，则返回 `true`。
+    /// `true` if the binding should reject (firewall fail, or path requires auth but token missing/invalid).
+    /// 防火墙失败，或路径要求鉴权但 token 缺失/无效时返回 `true`。
     pub fn should_reject(&self) -> bool {
-        self.auth.should_reject()
+        self.firewall_error.is_some() || self.auth.should_reject()
     }
 
     /// Run `fut` with [`SaTokenContext::scope`] using this flow's [`AuthFlowResult::context`] (await-safe).
@@ -317,8 +321,8 @@ impl AuthFlowResult {
     }
 }
 
-/// Full auth pipeline: [`extract_token_from`] → optional [`PathAuthConfig`] via [`process_auth`], else default check → [`create_context`].
-/// 完整鉴权流水线：[`extract_token_from`] → 若有 [`PathAuthConfig`] 则 [`process_auth`]，否则默认校验 → [`create_context`]。
+/// Full auth pipeline: firewall → [`extract_token_from`] → optional [`PathAuthConfig`] via [`process_auth`], else default check → [`create_context`].
+/// 完整鉴权流水线：防火墙 → [`extract_token_from`] → 若有 [`PathAuthConfig`] 则 [`process_auth`]，否则默认校验 → [`create_context`]。
 ///
 /// Pass `path_config: None` for “validate token if present, no path-based reject”.
 /// `path_config` 为 `None` 时表示：有 token 则校验并填上下文，不按路径规则拒绝。
@@ -327,6 +331,25 @@ pub async fn run_auth_flow<R: SaRequest>(
     manager: &SaTokenManager,
     path_config: Option<&PathAuthConfig>,
 ) -> AuthFlowResult {
+    if let Err(err) = SaFirewallStrategy::check(req) {
+        let auth_meta =
+            RequestAuthMeta::from_request(req, manager.config.same_token_header.as_str());
+        let auth = AuthResult {
+            need_auth: false,
+            token: None,
+            token_info: None,
+            is_valid: false,
+        };
+        let ctx = create_context(&auth, auth_meta);
+        return AuthFlowResult {
+            auth,
+            login_id: None,
+            token: None,
+            context: ctx,
+            firewall_error: Some(err),
+        };
+    }
+
     let token_str = extract_token_from(req, &manager.config);
     let path = req.get_path();
     let auth_meta = RequestAuthMeta::from_request(req, manager.config.same_token_header.as_str());
@@ -372,5 +395,6 @@ pub async fn run_auth_flow<R: SaRequest>(
         login_id,
         token,
         context: ctx,
+        firewall_error: None,
     }
 }

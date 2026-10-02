@@ -1917,6 +1917,328 @@ impl StpUtil {
     pub async fn delete_temp_token(token: &str) -> SaTokenResult<()> {
         crate::temp_token::delete_default(token).await
     }
+
+    // ==================== Java StpUtil parity ====================
+
+    /// Replace a token (marker `-4`). Java `replacedByTokenValue`.
+    /// 按 token 顶下线（标记 `-4`）。
+    pub async fn replaced_by_token(token: &TokenValue) -> SaTokenResult<()> {
+        Self::try_get_manager()?.replaced_by_token(token).await
+    }
+
+    /// Replace every token of an account. Java `replaced(loginId)`.
+    /// 按账号顶下线全部 token。
+    pub async fn replaced(login_id: impl LoginId) -> SaTokenResult<()> {
+        let login_type = Self::resolve_login_type();
+        Self::replaced_with_type(login_type.as_ref(), login_id).await
+    }
+
+    /// Replace every token of an account in a login type.
+    /// 按账号体系 + 账号顶下线全部 token。
+    pub async fn replaced_with_type(login_type: &str, login_id: impl LoginId) -> SaTokenResult<()> {
+        Self::try_get_manager()?
+            .replaced(login_type, &login_id.to_login_id())
+            .await
+    }
+
+    /// Replace tokens of one device type. Java `replaced(loginId, deviceType)`.
+    /// 只顶指定设备类型的 token。
+    pub async fn replaced_by_device(
+        login_id: impl LoginId,
+        device_type: &str,
+    ) -> SaTokenResult<()> {
+        let login_id = login_id.to_login_id();
+        let terminals = Self::get_terminal_list(&login_id, Some(device_type)).await?;
+        for t in terminals {
+            Self::replaced_by_token(&TokenValue::new(&t.token_value)).await?;
+        }
+        Ok(())
+    }
+
+    /// Anonymous token-session (skips login check). Java `getAnonTokenSession`.
+    /// 匿名 Token-Session（跳过登录校验）。
+    pub async fn get_anon_token_session(token: &TokenValue) -> SaTokenResult<SaSession> {
+        Self::try_get_manager()?.get_anon_token_session(token).await
+    }
+
+    /// Anonymous token-session of the current request token.
+    /// 当前请求 token 的匿名 Token-Session。
+    pub async fn get_anon_token_session_current() -> SaTokenResult<SaSession> {
+        let token = Self::get_token_value()?;
+        Self::get_anon_token_session(&token).await
+    }
+
+    /// Remaining disable seconds (`-1` permanent, `-2` not banned).
+    /// 剩余封禁秒数（`-1` 永久，`-2` 未封禁）。
+    pub async fn get_disable_time(login_id: impl LoginId) -> SaTokenResult<i64> {
+        Self::get_disable_time_service(login_id, crate::disable::DEFAULT_DISABLE_SERVICE).await
+    }
+
+    /// Remaining disable seconds for a service (`-1` / `-2` sentinels).
+    /// 指定服务的剩余封禁秒数。
+    pub async fn get_disable_time_service(
+        login_id: impl LoginId,
+        service: &str,
+    ) -> SaTokenResult<i64> {
+        let login_type = Self::resolve_login_type();
+        Self::try_get_manager()?
+            .get_disable_time_with_type(login_type.as_ref(), &login_id.to_login_id(), service)
+            .await
+    }
+
+    /// Whether the account is banned. Does not throw `AccountBanned`.
+    /// 账号是否被封禁。不抛 `AccountBanned`。
+    pub async fn is_disable(login_id: impl LoginId) -> SaTokenResult<bool> {
+        Self::is_disable_service(login_id, crate::disable::DEFAULT_DISABLE_SERVICE).await
+    }
+
+    /// Whether a service is banned. Does not throw `AccountBanned`.
+    /// 指定服务是否被封禁。不抛 `AccountBanned`。
+    pub async fn is_disable_service(login_id: impl LoginId, service: &str) -> SaTokenResult<bool> {
+        let login_type = Self::resolve_login_type();
+        Self::try_get_manager()?
+            .is_disable_level_with_type(
+                login_type.as_ref(),
+                &login_id.to_login_id(),
+                service,
+                crate::disable::MIN_DISABLE_LEVEL,
+            )
+            .await
+    }
+
+    /// Disable a service at default level 1. Java `disable(loginId, service, time)`.
+    /// 封禁指定服务（默认等级 1）。
+    pub async fn disable_service(
+        login_id: impl LoginId,
+        service: &str,
+        time: i64,
+    ) -> SaTokenResult<()> {
+        Self::disable_level(
+            login_id,
+            service,
+            crate::disable::DEFAULT_DISABLE_LEVEL,
+            time,
+        )
+        .await
+    }
+
+    /// Untie the default `login` service. Java `untieDisable(loginId)`.
+    /// 解封默认服务 `login`。
+    pub async fn untie_disable_default(login_id: impl LoginId) -> SaTokenResult<()> {
+        Self::untie_disable(login_id, crate::disable::DEFAULT_DISABLE_SERVICE).await
+    }
+
+    /// Disable level of the default `login` service.
+    /// 默认服务的封禁等级。
+    pub async fn get_disable_level_default(login_id: impl LoginId) -> SaTokenResult<i32> {
+        Self::get_disable_level(login_id, crate::disable::DEFAULT_DISABLE_SERVICE).await
+    }
+
+    /// Remaining secondary-auth seconds of the current token.
+    /// 当前 token 二级认证剩余秒数。
+    pub async fn get_safe_time_current(service: &str) -> SaTokenResult<Option<i64>> {
+        let token = Self::get_token_value()?;
+        Self::try_get_manager()?
+            .get_safe_time(&token, service)
+            .await
+    }
+
+    /// Open default-service secondary auth. Java `openSafe(safeTime)`.
+    /// 开启默认业务的二级认证。
+    pub async fn open_safe_default(safe_time: i64) -> SaTokenResult<()> {
+        Self::open_safe(crate::safe::DEFAULT_SAFE_SERVICE, safe_time).await
+    }
+
+    /// Whether default-service secondary auth is active. Java `isSafe()`.
+    /// 默认业务二级认证是否有效。
+    pub async fn is_safe_default() -> SaTokenResult<bool> {
+        Self::is_safe(crate::safe::DEFAULT_SAFE_SERVICE).await
+    }
+
+    /// Check default-service secondary auth. Java `checkSafe()`.
+    /// 校验默认业务二级认证。
+    pub async fn check_safe_default() -> SaTokenResult<()> {
+        Self::check_safe(crate::safe::DEFAULT_SAFE_SERVICE).await
+    }
+
+    /// Close default-service secondary auth. Java `closeSafe()`.
+    /// 关闭默认业务二级认证。
+    pub async fn close_safe_default() -> SaTokenResult<()> {
+        Self::close_safe(crate::safe::DEFAULT_SAFE_SERVICE).await
+    }
+
+    /// Device type of a token. Java `getLoginDeviceTypeByToken`.
+    /// 指定 token 的登录设备类型。
+    pub async fn get_login_device_type(token: &TokenValue) -> SaTokenResult<Option<String>> {
+        Ok(Self::get_terminal_info_by_token(token)
+            .await?
+            .map(|t| t.device_type))
+    }
+
+    /// Device id of a token. Java `getLoginDeviceIdByToken`.
+    /// 指定 token 的登录设备 id。
+    pub async fn get_login_device_id(token: &TokenValue) -> SaTokenResult<Option<String>> {
+        Ok(Self::get_terminal_info_by_token(token)
+            .await?
+            .and_then(|t| t.device_id))
+    }
+
+    /// Device type of the current token. Java `getLoginDeviceType`.
+    /// 当前 token 的登录设备类型。
+    pub async fn get_login_device_type_current() -> SaTokenResult<Option<String>> {
+        let token = Self::get_token_value()?;
+        Self::get_login_device_type(&token).await
+    }
+
+    /// Device id of the current token. Java `getLoginDeviceId`.
+    /// 当前 token 的登录设备 id。
+    pub async fn get_login_device_id_current() -> SaTokenResult<Option<String>> {
+        let token = Self::get_token_value()?;
+        Self::get_login_device_id(&token).await
+    }
+
+    /// Whether `device_id` is a trusted device of `login_id`.
+    /// 指定设备 id 是否为该账号的可信设备。
+    pub async fn is_trust_device_id(
+        login_id: impl LoginId,
+        device_id: &str,
+    ) -> SaTokenResult<bool> {
+        let session = Self::get_session(login_id).await?;
+        Ok(session.is_trust_device_id(device_id))
+    }
+
+    /// Fail if the token is frozen. Java `checkActiveTimeout`.
+    /// token 已冻结则报 `TokenInactive`。
+    pub async fn check_active_timeout(token: &TokenValue) -> SaTokenResult<()> {
+        if Self::is_freeze(token).await? {
+            return Err(SaTokenError::TokenInactive);
+        }
+        Ok(())
+    }
+
+    /// Whether the token is frozen. Java `isFreeze`.
+    /// token 是否已冻结。
+    pub async fn is_freeze(token: &TokenValue) -> SaTokenResult<bool> {
+        let manager = Self::try_get_manager()?;
+        let Some(info) = manager.token_repo().get_token_info(token.as_str()).await? else {
+            return Ok(false);
+        };
+        Ok(info.is_freeze(info.effective_active_timeout(&manager.config)))
+    }
+
+    /// Refresh last-active to now. Java `updateLastActiveToNow`.
+    /// 将最后活跃时间更新为当前时刻。
+    pub async fn update_last_active_to_now(token: &TokenValue) -> SaTokenResult<()> {
+        let manager = Self::try_get_manager()?;
+        let repo = manager.token_repo();
+        let info = repo
+            .get_token_info(token.as_str())
+            .await?
+            .ok_or(SaTokenError::TokenNotFound)?;
+        repo.apply_active_refresh(token.as_str(), info).await?;
+        Ok(())
+    }
+
+    /// Last-active time as unix seconds. Java `getTokenLastActiveTime` (millis there).
+    /// 最后活跃时间（unix 秒）。
+    pub async fn get_token_last_active_time(token: &TokenValue) -> SaTokenResult<i64> {
+        let info = Self::try_get_manager()?
+            .token_repo()
+            .get_token_info(token.as_str())
+            .await?
+            .ok_or(SaTokenError::TokenNotFound)?;
+        Ok(info.last_active_time.timestamp())
+    }
+
+    /// Storage TTL of token-info: `-1` permanent, `-2` missing. Java `getTokenTimeout`.
+    /// token 存储剩余秒数：`-1` 永久，`-2` 不存在。
+    pub async fn get_token_timeout_or_sentinel(token: &TokenValue) -> SaTokenResult<i64> {
+        let manager = Self::try_get_manager()?;
+        ttl_or_sentinel(manager, &manager.keys().token_info(token.as_str())).await
+    }
+
+    /// Account-session storage TTL: `-1` permanent, `-2` missing. Java `getSessionTimeout`.
+    /// Account-Session 存储剩余秒数。
+    pub async fn get_session_timeout(login_id: impl LoginId) -> SaTokenResult<i64> {
+        let manager = Self::try_get_manager()?;
+        let login_type = Self::resolve_login_type();
+        let key = manager
+            .keys()
+            .account_session(login_type.as_ref(), &login_id.to_login_id());
+        ttl_or_sentinel(manager, &key).await
+    }
+
+    /// Token-session storage TTL: `-1` permanent, `-2` missing. Java `getTokenSessionTimeout`.
+    /// Token-Session 存储剩余秒数。
+    pub async fn get_token_session_timeout(token: &TokenValue) -> SaTokenResult<i64> {
+        let manager = Self::try_get_manager()?;
+        ttl_or_sentinel(manager, &manager.keys().token_session(token.as_str())).await
+    }
+
+    /// Config token name. Java `getTokenName`.
+    /// 配置中的 token 名称。
+    pub fn get_token_name() -> SaTokenResult<String> {
+        Ok(Self::try_get_manager()?.config.token_name.clone())
+    }
+
+    /// Extra-data field of a token. Java `getExtra(token, key)`.
+    /// 从 token extra_data JSON 取字段。
+    pub async fn get_extra(
+        token: &TokenValue,
+        key: &str,
+    ) -> SaTokenResult<Option<serde_json::Value>> {
+        Ok(Self::get_extra_data(token)
+            .await?
+            .and_then(|v| v.get(key).cloned()))
+    }
+
+    /// Extra-data field of the current token. Java `getExtra(key)`.
+    /// 当前 token extra_data JSON 字段。
+    pub async fn get_extra_current(key: &str) -> SaTokenResult<Option<serde_json::Value>> {
+        let token = Self::get_token_value()?;
+        Self::get_extra(&token, key).await
+    }
+
+    /// Current login_id as i32. Java `getLoginIdAsInt`.
+    /// 当前 login_id 解析为 i32；失败 `LoginIdNotNumber`。
+    pub async fn get_login_id_as_int() -> SaTokenResult<i32> {
+        Self::get_login_id_as_string()
+            .await?
+            .parse::<i32>()
+            .map_err(|_| SaTokenError::LoginIdNotNumber)
+    }
+
+    /// login_id of a token, ignoring freeze. Java `getLoginIdByTokenNotThinkFreeze`.
+    /// 读 token 映射/info，忽略冻结；被踢/被顶或不存在返回 `None`。
+    pub async fn get_login_id_by_token_not_think_freeze(
+        token: &TokenValue,
+    ) -> SaTokenResult<Option<String>> {
+        let manager = Self::try_get_manager()?;
+        if let Some(info) = manager.token_repo().get_token_info(token.as_str()).await? {
+            return Ok(Some(info.login_id.to_string()));
+        }
+        match manager
+            .token_repo()
+            .get_token_id_mapping(token.as_str())
+            .await?
+        {
+            Some(crate::repository::TokenIdMapping::Identity { login_id, .. }) => {
+                Ok(Some(login_id))
+            }
+            _ => Ok(None),
+        }
+    }
+}
+
+/// Storage TTL with Java sentinels: `-2` missing, `-1` exists without TTL.
+async fn ttl_or_sentinel(manager: &SaTokenManager, key: &str) -> SaTokenResult<i64> {
+    if !manager.dao().exists(key).await? {
+        return Ok(-2);
+    }
+    match manager.dao().ttl(key).await? {
+        None => Ok(-1),
+        Some(d) => Ok(d.as_secs() as i64),
+    }
 }
 
 /// Token 构建器 - 支持链式调用 | Token Builder - Supports chain calls

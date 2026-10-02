@@ -203,3 +203,28 @@ async fn current_login_id_from_context() {
     assert_eq!(current, login_id);
     SaTokenContext::clear();
 }
+
+#[tokio::test]
+async fn check_login_id_match_and_mismatch() {
+    let mgr = setup::fresh_manager();
+    let api = api_of(&mgr);
+    let login_id = setup::unique_login_id("ak");
+    let model = api.create(&login_id);
+    api.save(&model).await.expect("save");
+
+    let owned = api
+        .check_login_id(&model.api_key, &login_id)
+        .await
+        .expect("owner match");
+    assert_eq!(owned.login_id, login_id);
+    assert_eq!(owned.api_key, model.api_key);
+
+    let err = api
+        .check_login_id(&model.api_key, "someone-else")
+        .await
+        .expect_err("owner mismatch");
+    assert!(
+        matches!(err, SaTokenError::PermissionDeniedDetail(ref s) if s == "someone-else"),
+        "mismatch, got {err:?}"
+    );
+}

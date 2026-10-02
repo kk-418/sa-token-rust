@@ -3,6 +3,7 @@
 
 pub(crate) mod check_disable;
 pub(crate) mod check_http_basic;
+pub(crate) mod check_http_digest;
 pub(crate) mod check_login;
 pub(crate) mod check_or;
 pub(crate) mod check_permission;

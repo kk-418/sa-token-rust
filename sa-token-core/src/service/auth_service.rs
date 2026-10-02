@@ -861,6 +861,29 @@ impl AuthService {
         Ok(())
     }
 
+    /// 按账号顶下线全部 token（REPLACED 模式）。不发 kick_out_notify。
+    /// Replace every token of an account (`LogoutMode::Replaced`). No kick-out notify.
+    pub async fn replaced(&self, login_type: &str, login_id: &str) -> SaTokenResult<()> {
+        self.reject_jwt_stateless()?;
+        if let Some(online) = &self.online_manager {
+            let _ = online
+                .mark_offline_all_with_type(login_type, login_id)
+                .await;
+        }
+
+        let tokens = self.collect_account_tokens(login_type, login_id).await?;
+        for t in tokens {
+            if let Err(e) = self.logout_replaced(&TokenValue::new(t.clone())).await {
+                tracing::warn!(token = %t, error = %e, "replaced of one token failed");
+            }
+        }
+
+        if let Ok(ns) = Self::account_ns(login_type, login_id) {
+            let _ = self.session_repo.delete_by_ns(&ns).await;
+        }
+        Ok(())
+    }
+
     /// 读取并校验 token（按策略自动续签）。
     pub async fn get_token_info(&self, token: &TokenValue) -> SaTokenResult<TokenInfo> {
         if self.is_jwt_stateless() {

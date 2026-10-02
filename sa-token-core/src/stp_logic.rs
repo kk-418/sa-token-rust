@@ -433,6 +433,30 @@ impl SaLogic {
             .and_then(|c| c.switch_login_id())
             .is_some()
     }
+
+    /// Replace every token of an account | 按账号顶下线
+    pub async fn replaced(&self, login_id: &str) -> SaTokenResult<()> {
+        self.manager.replaced(&self.login_type, login_id).await
+    }
+
+    /// Remaining disable seconds (`-1` permanent, `-2` not banned).
+    /// 剩余封禁秒数（`-1` 永久，`-2` 未封禁）。
+    pub async fn get_disable_time(&self, login_id: &str) -> SaTokenResult<i64> {
+        self.manager
+            .get_disable_time_with_type(
+                &self.login_type,
+                login_id,
+                disable::DEFAULT_DISABLE_SERVICE,
+            )
+            .await
+    }
+
+    /// Whether `device_id` is a trusted device of this account.
+    /// 指定设备 id 是否为该账号的可信设备。
+    pub async fn is_trust_device_id(&self, login_id: &str, device_id: &str) -> SaTokenResult<bool> {
+        let session = self.get_session(login_id).await?;
+        Ok(session.is_trust_device_id(device_id))
+    }
 }
 
 #[cfg(test)]
