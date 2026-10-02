@@ -5,8 +5,8 @@
 use http::{Request, Response};
 use sa_token_core::{router::PathAuthConfig, router::run_auth_flow};
 use sa_token_plugin_common::{
-    CONTENT_TYPE_JSON, SaTokenHttpStatus, SaTokenState, apply_to_typed_extensions,
-    unauthorized_json, write_json_body,
+    CONTENT_TYPE_JSON, SaTokenHttpStatus, SaTokenState, apply_pending_cookie,
+    apply_to_typed_extensions, unauthorized_json, write_json_body,
 };
 use std::pin::Pin;
 use std::task::{Context, Poll};
@@ -96,7 +96,11 @@ where
 
             apply_to_typed_extensions(request.extensions_mut(), &flow);
 
-            flow.run(inner.call(request)).await
+            let ctx = flow.context.clone();
+            let response = flow.run(inner.call(request)).await?;
+            let mut adapter = crate::shared::adapter::AxumResponseAdapter::new(response);
+            apply_pending_cookie(&ctx, &mut adapter, &state.manager.config);
+            Ok(adapter.into_response())
         })
     }
 }

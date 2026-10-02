@@ -44,6 +44,14 @@ async fn me(SaTokenExtractor(token): SaTokenExtractor) -> String {
 
 Public routes must use `PathAuthConfig::exclude`. `#[sa_ignore]` skips macro checks only — not the Layer.
 
+`SaTokenLayer` calls `apply_pending_cookie` after the handler returns. When `is_read_cookie` and `is_write_cookie` are both true, `StpUtil::login` / `login_with_timeout` / `TokenBuilder::login` queue a Set-Cookie, and `StpUtil::logout` / `logout_current` queue a cookie delete if the request-context token matches.
+
+## Auto cookie write
+
+Other frameworks should call `apply_pending_cookie(ctx, &mut res, &config)` in the response phase. The helper is a no-op when there is no pending cookie.
+
+Requires `is_read_cookie && is_write_cookie`. Clone the flow `SaTokenContext` before `flow.run` so you can still `take` pending after the handler awaits.
+
 ## Actix-web: Middleware
 
 The facade defaults to **`v4`**. Feature **`v5` is a placeholder only**; enabling it alone triggers `compile_error!`. Use `v4` in production.
@@ -88,7 +96,7 @@ Adapters map the request to `SaRequest`, then:
 
 - `token_io::read_token` — respects `is_read_header` / `is_read_cookie` / `is_read_body` and `token_name`
 - `apply_token_prefix` — optional prefix
-- Write-back: `is_write_cookie` + `write_token_cookie`
+- Write-back: `is_write_cookie` + `write_token_cookie` / `apply_pending_cookie`
 
 Map-shaped handshake reads use `read_token_from_maps` ([WebSocket auth](/guide/websocket-auth.md)).
 

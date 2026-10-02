@@ -44,6 +44,14 @@ async fn me(SaTokenExtractor(token): SaTokenExtractor) -> String {
 
 公开路由必须 `PathAuthConfig::exclude`；`#[sa_ignore]` 只跳过宏检查，不跳过 Layer。
 
+`SaTokenLayer` 在 handler 返回后自动调用 `apply_pending_cookie`。当 `is_read_cookie` 与 `is_write_cookie` 均为 true 时，`StpUtil::login` / `login_with_timeout` / `TokenBuilder::login` 会排队 Set-Cookie；`StpUtil::logout` / `logout_current` 在上下文 token 与被登出 token 相同时排队删除 Cookie。
+
+## 登录登出自动写 Cookie
+
+其它框架在响应阶段调用 `apply_pending_cookie(ctx, &mut res, &config)`。无 pending 时为空操作。
+
+前提：`is_read_cookie && is_write_cookie`。先 clone 流程里的 `SaTokenContext`，再 `flow.run`，await 之后仍可 take pending。
+
 ## Actix-web：Middleware
 
 门面默认 **`v4`**。feature **`v5` 仅为占位**，单独启用会 `compile_error!`，生产请用 `v4`。
@@ -88,7 +96,7 @@ HttpServer::new(move || {
 
 - `token_io::read_token` — 按 `is_read_header` / `is_read_cookie` / `is_read_body` 与 `token_name`
 - `apply_token_prefix` — 可选前缀
-- 写回：`is_write_cookie` + `write_token_cookie`
+- 写回：`is_write_cookie` + `write_token_cookie` / `apply_pending_cookie`
 
 WebSocket 握手的 map 形态见 `read_token_from_maps`（[WebSocket 鉴权](/zh/guide/websocket-auth.md)）。
 

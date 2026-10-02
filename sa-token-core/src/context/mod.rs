@@ -30,6 +30,25 @@ use std::sync::{Arc, RwLock};
 
 use crate::token::{TokenInfo, TokenValue};
 
+/// Cookie write queued by `StpUtil::login` / `logout` for the response phase.
+/// `StpUtil::login` / `logout` 在响应阶段排队的 Cookie 写入。
+#[derive(Debug, Clone)]
+pub enum PendingCookie {
+    /// Set the token cookie with an explicit Max-Age.
+    /// 按指定 Max-Age 写入 token Cookie。
+    Write {
+        /// Token value written into the cookie.
+        /// 写入 Cookie 的 token 值。
+        token: TokenValue,
+        /// Cookie Max-Age in seconds (`< 0` = session cookie).
+        /// Cookie Max-Age（秒；`< 0` 表示会话 Cookie）。
+        max_age: i64,
+    },
+    /// Clear the token cookie (`Max-Age=0`).
+    /// 清除 token Cookie（`Max-Age=0`）。
+    Delete,
+}
+
 /// 上下文可变状态（内部数据，由 `Arc<RwLock>` 保护）
 ///
 /// Mutable context state (internal data protected by `Arc<RwLock>`).
@@ -59,6 +78,10 @@ pub struct SaTokenContextInner {
     /// Whether `active_refresh` already ran in this request (Java `SaHolder.getStorage()`).
     /// 本请求是否已执行过 `active_refresh`（对齐 Java `SaHolder.getStorage()` 去重）。
     pub active_refreshed: bool,
+
+    /// Cookie to apply after the handler returns (`None` = no-op).
+    /// handler 返回后要下发的 Cookie（`None` 表示不写）。
+    pub pending_cookie: Option<PendingCookie>,
 }
 
 /// Headers needed by HTTP Basic / Same-Token macros (copied before `.await`).
@@ -257,6 +280,12 @@ impl SaTokenContext {
     /// 本请求是否已执行过 `active_refresh`。
     pub fn active_refreshed(&self) -> bool {
         Self::read_inner(&self.inner).active_refreshed
+    }
+
+    /// Take the pending cookie write (clears the field).
+    /// 取出待写入 Cookie（同时清空字段）。
+    pub fn take_pending_cookie(&self) -> Option<PendingCookie> {
+        Self::write_inner(&self.inner).pending_cookie.take()
     }
 
     // ==================== Scope 与 Task-Local 管理 ====================
@@ -479,5 +508,46 @@ impl SaTokenContextBuilder {
 impl Default for SaTokenContextBuilder {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn take_pending_cookie_clears_context_field() {
+        let ctx = SaTokenContext::new();
+        SaTokenContext::set_current(ctx.clone());
+        let _ = SaTokenContext::with_current_mut(|inner| {
+            inner.pending_cookie = Some(PendingCookie::Write {
+                token: TokenValue::new("tok"),
+                max_age: 86400,
+            });
+        });
+
+        match ctx.take_pending_cookie() {
+            Some(PendingCookie::Write { token, max_age }) => {
+                assert_eq!(token.as_str(), "tok");
+                assert_eq!(max_age, 86400);
+            }
+            other => panic!("expected Write, got {other:?}"),
+        }
+        assert!(ctx.take_pending_cookie().is_none());
+        SaTokenContext::clear();
+    }
+
+    #[test]
+    fn take_pending_cookie_delete_variant() {
+        let ctx = SaTokenContext::new();
+        SaTokenContext::set_current(ctx.clone());
+        let _ = SaTokenContext::with_current_mut(|inner| {
+            inner.pending_cookie = Some(PendingCookie::Delete);
+        });
+        assert!(matches!(
+            ctx.take_pending_cookie(),
+            Some(PendingCookie::Delete)
+        ));
+        SaTokenContext::clear();
     }
 }

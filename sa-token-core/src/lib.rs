@@ -63,7 +63,8 @@ pub use config::{
     ReplacedRange, SaTokenConfig, TokenCookieConfig,
 };
 pub use context::{
-    GrantScope, RequestAuthMeta, SaTokenContext, SaTokenContextBuilder, SaTokenContextInner,
+    GrantScope, PendingCookie, RequestAuthMeta, SaTokenContext, SaTokenContextBuilder,
+    SaTokenContextInner,
 };
 pub use dao::SaTokenDao;
 pub use error::{SaTokenError, SaTokenResult};

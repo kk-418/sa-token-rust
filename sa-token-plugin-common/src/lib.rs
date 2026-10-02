@@ -10,11 +10,13 @@
 
 #![allow(missing_docs, missing_debug_implementations)]
 
+pub mod cookie;
 pub mod ext;
 pub mod rejection;
 pub mod snapshot;
 pub mod state;
 
+pub use cookie::apply_pending_cookie;
 pub use ext::{SaLoginId, apply_to_typed_extensions};
 pub use rejection::{
     CONTENT_TYPE_JSON, SaTokenHttpStatus, WWW_AUTHENTICATE, forbidden_json, forbidden_role_json,

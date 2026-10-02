@@ -144,8 +144,15 @@ impl<T> SaResponse for AxumResponseAdapter<T> {
         if options.secure {
             cookie.push_str("; Secure");
         }
+        if let Some(same_site) = options.same_site {
+            cookie.push_str(&format!("; SameSite={}", same_site));
+        }
 
-        self.set_header("Set-Cookie", &cookie);
+        if let Ok(hv) = http::header::HeaderValue::from_str(&cookie) {
+            self.response
+                .headers_mut()
+                .append(http::header::SET_COOKIE, hv);
+        }
     }
 
     fn set_status(&mut self, status: u16) {

@@ -14,7 +14,7 @@ use std::borrow::Cow;
 use std::sync::Arc;
 use std::sync::OnceLock;
 
-use crate::context::SaTokenContext;
+use crate::context::{PendingCookie, SaTokenContext};
 use crate::event::{SaTokenEventBus, SaTokenListener};
 use crate::keys::LOGIN_TYPE_DEFAULT;
 use crate::session::SaSession;
@@ -201,7 +201,13 @@ impl StpUtil {
     /// let token = StpUtil::login(10001_i64).await?;
     /// ```
     pub async fn login(login_id: impl LoginId) -> SaTokenResult<TokenValue> {
-        Self::try_get_manager()?.login(login_id.to_login_id()).await
+        let manager = Self::try_get_manager()?;
+        let token = manager.login(login_id.to_login_id()).await?;
+        Self::record_pending_cookie(PendingCookie::Write {
+            token: token.clone(),
+            max_age: manager.config.timeout,
+        });
+        Ok(token)
     }
 
     /// Login with a per-token timeout in seconds (Java `StpUtil.login(id, timeout)`).
@@ -211,7 +217,12 @@ impl StpUtil {
         timeout_seconds: i64,
     ) -> SaTokenResult<TokenValue> {
         let req = LoginRequest::new(login_id.to_login_id()).timeout(timeout_seconds);
-        Self::try_get_manager()?.auth_service().login(req).await
+        let token = Self::try_get_manager()?.auth_service().login(req).await?;
+        Self::record_pending_cookie(PendingCookie::Write {
+            token: token.clone(),
+            max_age: timeout_seconds,
+        });
+        Ok(token)
     }
 
     /// `login_with_type` — login with type | `login_with_type`
@@ -267,6 +278,7 @@ impl StpUtil {
         match &result {
             Ok(_) => {
                 tracing::debug!("logout 执行成功，token: {}", token);
+                Self::record_pending_cookie_delete_if_current(token);
                 Self::clear_current_auth_if_token_matches(token);
             }
             Err(e) => tracing::debug!("logout 执行失败，token: {}, 错误: {}", token, e),
@@ -429,6 +441,34 @@ impl StpUtil {
                 inner.login_id = None;
                 inner.token_info = None;
                 inner.token = None;
+            }
+        });
+    }
+
+    fn cookie_write_enabled() -> bool {
+        Self::try_get_config().is_some_and(Self::cookie_write_enabled_for)
+    }
+
+    fn cookie_write_enabled_for(config: &crate::config::SaTokenConfig) -> bool {
+        config.is_read_cookie && config.cookie.is_write_cookie
+    }
+
+    fn record_pending_cookie(pending: PendingCookie) {
+        if !Self::cookie_write_enabled() {
+            return;
+        }
+        let _ = SaTokenContext::with_current_mut(|inner| {
+            inner.pending_cookie = Some(pending);
+        });
+    }
+
+    fn record_pending_cookie_delete_if_current(token: &TokenValue) {
+        if !Self::cookie_write_enabled() {
+            return;
+        }
+        let _ = SaTokenContext::with_current_mut(|inner| {
+            if inner.token.as_ref() == Some(token) {
+                inner.pending_cookie = Some(PendingCookie::Delete);
             }
         });
     }
@@ -1941,6 +1981,13 @@ impl TokenBuilder {
             Some(id) => id.to_login_id(),
             None => self.login_id,
         };
+        let max_age = if let Some(timeout_secs) = self.timeout_secs {
+            timeout_secs
+        } else if let Some(expire_time) = self.expire_time {
+            (expire_time - chrono::Utc::now()).num_seconds().max(0)
+        } else {
+            manager.config.timeout
+        };
         let mut req = LoginRequest::new(final_login_id);
         if let Some(login_type) = self.login_type {
             req = req.login_type(login_type);
@@ -1960,7 +2007,12 @@ impl TokenBuilder {
         if let Some(timeout_secs) = self.timeout_secs {
             req = req.timeout(timeout_secs);
         }
-        manager.auth_service().login(req).await
+        let token = manager.auth_service().login(req).await?;
+        StpUtil::record_pending_cookie(PendingCookie::Write {
+            token: token.clone(),
+            max_age,
+        });
+        Ok(token)
     }
 }
 
@@ -1979,5 +2031,20 @@ mod tests {
     fn test_create_token() {
         let token = StpUtil::create_token("test-token-123");
         assert_eq!(token.as_str(), "test-token-123");
+    }
+
+    #[test]
+    fn cookie_write_enabled_for_requires_read_and_write_cookie() {
+        let mut config = crate::SaTokenConfig::default();
+        config.is_read_cookie = true;
+        config.cookie.is_write_cookie = true;
+        assert!(StpUtil::cookie_write_enabled_for(&config));
+
+        config.is_read_cookie = false;
+        assert!(!StpUtil::cookie_write_enabled_for(&config));
+
+        config.is_read_cookie = true;
+        config.cookie.is_write_cookie = false;
+        assert!(!StpUtil::cookie_write_enabled_for(&config));
     }
 }
