@@ -84,7 +84,11 @@ pub fn http_rejection_for(err: &SaTokenError) -> (SaTokenHttpStatus, Value, Opti
         | SaTokenError::TokenExpired
         | SaTokenError::TokenNotFound
         | SaTokenError::TokenInactive
-        | SaTokenError::SameTokenInvalid => {
+        | SaTokenError::SameTokenInvalid
+        | SaTokenError::AccountKickedOut
+        | SaTokenError::AccountReplaced
+        | SaTokenError::InvalidToken(_)
+        | SaTokenError::LoginIdNotNumber => {
             (SaTokenHttpStatus::Unauthorized, unauthorized_json(), None)
         }
         SaTokenError::RoleDenied(_) => (SaTokenHttpStatus::Forbidden, forbidden_role_json(), None),
@@ -117,4 +121,45 @@ pub const CONTENT_TYPE_JSON: &str = "application/json; charset=utf-8";
 pub fn write_json_body(value: &Value) -> Vec<u8> {
     serde_json::to_vec(value)
         .unwrap_or_else(|_| br#"{"code":500,"message":"Internal error"}"#.to_vec())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn status(err: &SaTokenError) -> SaTokenHttpStatus {
+        http_rejection_for(err).0
+    }
+
+    #[test]
+    fn kicked_out_is_401() {
+        assert_eq!(
+            status(&SaTokenError::AccountKickedOut),
+            SaTokenHttpStatus::Unauthorized
+        );
+    }
+
+    #[test]
+    fn replaced_is_401() {
+        assert_eq!(
+            status(&SaTokenError::AccountReplaced),
+            SaTokenHttpStatus::Unauthorized
+        );
+    }
+
+    #[test]
+    fn invalid_token_is_401() {
+        assert_eq!(
+            status(&SaTokenError::InvalidToken("bad".into())),
+            SaTokenHttpStatus::Unauthorized
+        );
+    }
+
+    #[test]
+    fn login_id_not_number_is_401() {
+        assert_eq!(
+            status(&SaTokenError::LoginIdNotNumber),
+            SaTokenHttpStatus::Unauthorized
+        );
+    }
 }

@@ -189,6 +189,59 @@ impl PermissionMatcher for ExactMatcher {
     }
 }
 
+/// Java `SaFoxUtil.vagueMatch`：`*` 匹配任意字符序列（含跨 `:` 段）。
+///
+/// Java `SaFoxUtil.vagueMatch`: `*` matches any character sequence, including
+/// across `:` segments. `user:*` therefore covers `user:profile:edit`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VaguePermissionMatcher;
+
+impl VaguePermissionMatcher {
+    /// Port of Java `SaFoxUtil.vagueMatch` (null-free: both sides are `&str`).
+    fn vague_match(pattern: &str, s: &str) -> bool {
+        if !pattern.as_bytes().contains(&b'*') {
+            return pattern == s;
+        }
+        Self::vague_match_dp(pattern.as_bytes(), s.as_bytes())
+    }
+
+    /// Port of Java `SaFoxUtil.vagueMatchMethod`. Rolling-array DP.
+    fn vague_match_dp(pattern: &[u8], s: &[u8]) -> bool {
+        let n = pattern.len();
+        let m = s.len();
+        let mut prev = vec![false; n + 1];
+        prev[0] = true;
+        for j in 1..=n {
+            if pattern[j - 1] == b'*' {
+                prev[j] = true;
+            } else {
+                break;
+            }
+        }
+        let mut curr = vec![false; n + 1];
+        for i in 1..=m {
+            curr[0] = false;
+            for j in 1..=n {
+                curr[j] = if pattern[j - 1] == b'*' {
+                    curr[j - 1] || prev[j]
+                } else if s[i - 1] == pattern[j - 1] {
+                    prev[j - 1]
+                } else {
+                    false
+                };
+            }
+            std::mem::swap(&mut prev, &mut curr);
+        }
+        prev[n]
+    }
+}
+
+impl PermissionMatcher for VaguePermissionMatcher {
+    fn matches_one(&self, owned: &str, required: &str) -> bool {
+        Self::vague_match(owned, required)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -217,5 +270,63 @@ mod tests {
         let m = ExactMatcher;
         assert!(m.matches_one("admin", "admin"));
         assert!(!m.matches_one("admin", "user"));
+    }
+
+    #[test]
+    fn vague_star_matches_any() {
+        let m = VaguePermissionMatcher;
+        assert!(m.matches_one("*", "user:profile:edit"));
+        assert!(m.matches_one("*", ""));
+        assert!(m.matches_one("*", "x"));
+    }
+
+    #[test]
+    fn vague_star_covers_cross_segment() {
+        let m = VaguePermissionMatcher;
+        let owned = vec!["user:*".to_string()];
+        assert!(m.matches(&owned, "user:profile:edit"));
+        assert!(m.matches(&owned, "user:add"));
+        assert!(m.matches(&owned, "user:"));
+        assert!(!m.matches(&owned, "user"));
+        assert!(!m.matches(&owned, "other:x"));
+    }
+
+    #[test]
+    fn vague_user_star_prefix() {
+        let m = VaguePermissionMatcher;
+        assert!(m.matches_one("user*", "user"));
+        assert!(m.matches_one("user*", "user:add"));
+    }
+
+    #[test]
+    fn vague_star_edit_suffix() {
+        let m = VaguePermissionMatcher;
+        assert!(m.matches_one("*:edit", "foo:edit"));
+        assert!(m.matches_one("*:edit", "user:profile:edit"));
+    }
+
+    #[test]
+    fn vague_empty_string_equals_and_matches_false() {
+        let m = VaguePermissionMatcher;
+        assert!(m.matches_one("", ""));
+        let owned = vec!["user:*".to_string()];
+        assert!(!m.matches(&owned, ""));
+        let owned_empty = vec!["".to_string()];
+        assert!(!m.matches(&owned_empty, ""));
+    }
+
+    #[test]
+    fn vague_java_sa_fox_util_cases() {
+        let m = VaguePermissionMatcher;
+        assert!(m.matches_one("hello*", "hello"));
+        assert!(m.matches_one("hello*", "hello world"));
+        assert!(!m.matches_one("hello*", "he"));
+
+        assert!(m.matches_one("user:*", "user:add"));
+        assert!(!m.matches_one("user:*", "user"));
+        assert!(!m.matches_one("user:*", "usermgt:list"));
+
+        assert!(m.matches_one("user:*:add:*", "user:xx:add:1"));
+        assert!(!m.matches_one("user:*:add:*", "user:add:1"));
     }
 }

@@ -309,6 +309,7 @@ impl SaTokenError {
                 | Self::InvalidToken(_)
                 | Self::AccountKickedOut
                 | Self::AccountReplaced
+                | Self::LoginIdNotNumber
         )
     }
 

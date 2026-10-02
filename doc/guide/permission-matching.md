@@ -27,6 +27,19 @@ SaTokenConfig::builder()
 
 You can also inject a custom `PermissionMatcher` via `with_permission_matcher` / `with_role_matcher` on the manager.
 
+## Vague match (Java parity)
+
+Default remains **Ant**. Set `permission_match_mode(PermissionMatchMode::Vague)` to use Java `SaFoxUtil.vagueMatch`: `*` matches any character sequence, including across `:` segments. So `user:*` covers `user:profile:edit`.
+
+```rust
+SaTokenConfig::builder()
+    .storage(storage)
+    .permission_match_mode(PermissionMatchMode::Vague)
+    .try_build()?;
+```
+
+When `role_wildcard(true)`, roles use the same matcher (Vague if that mode is set).
+
 ## has_* vs check_*
 
 | Family | Returns | Typical use |

@@ -23,4 +23,4 @@
 
 pub mod matcher;
 
-pub use matcher::{AntPermissionMatcher, ExactMatcher, PermissionMatcher};
+pub use matcher::{AntPermissionMatcher, ExactMatcher, PermissionMatcher, VaguePermissionMatcher};

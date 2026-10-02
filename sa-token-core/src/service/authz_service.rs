@@ -11,11 +11,13 @@
 
 use std::sync::Arc;
 
-use crate::config::{GrantWritePolicy, SaTokenConfig};
+use crate::config::{GrantWritePolicy, PermissionMatchMode, SaTokenConfig};
 use crate::context::SaTokenContext;
 use crate::error::{SaTokenError, SaTokenResult};
 use crate::event::{SaTokenEvent, SaTokenEventBus};
-use crate::permission::{AntPermissionMatcher, ExactMatcher, PermissionMatcher};
+use crate::permission::{
+    AntPermissionMatcher, ExactMatcher, PermissionMatcher, VaguePermissionMatcher,
+};
 use crate::repository::GrantRepo;
 use crate::service::grant_cache::{GrantCache, GrantKind};
 use crate::stp_interface::{StorageStpInterface, StpInterface};
@@ -53,8 +55,12 @@ impl AuthzService {
     ) -> Self {
         let storage_iface = Arc::new(StorageStpInterface::new(Arc::clone(&grant_repo)));
 
+        let perm_matcher: Arc<dyn PermissionMatcher> = match config.permission_match_mode {
+            PermissionMatchMode::Vague => Arc::new(VaguePermissionMatcher),
+            PermissionMatchMode::Ant => Arc::new(AntPermissionMatcher),
+        };
         let role_matcher: Arc<dyn PermissionMatcher> = if config.role_wildcard {
-            Arc::new(AntPermissionMatcher)
+            perm_matcher.clone()
         } else {
             Arc::new(ExactMatcher)
         };
@@ -63,7 +69,7 @@ impl AuthzService {
             grant_repo,
             storage_iface,
             custom_iface,
-            perm_matcher: Arc::new(AntPermissionMatcher),
+            perm_matcher,
             role_matcher,
             cache: GrantCache::from_config(config),
             write_policy: config.grant_write_policy,
@@ -598,5 +604,83 @@ impl AuthzService {
     /// 当前缓存条目数（诊断用）| Cached entry count for diagnostics
     pub fn cache_len(&self) -> usize {
         self.cache.as_ref().map_or(0, |c| c.len())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dao::SaTokenDao;
+    use crate::repository::GrantRepo;
+    use sa_token_storage_memory::MemoryStorage;
+
+    fn authz(mode: PermissionMatchMode) -> AuthzService {
+        let config = Arc::new(SaTokenConfig {
+            permission_match_mode: mode,
+            ..Default::default()
+        });
+        let dao = Arc::new(SaTokenDao::new(
+            Arc::new(MemoryStorage::new()),
+            Arc::clone(&config),
+        ));
+        AuthzService::new(
+            Arc::new(GrantRepo::new(dao)),
+            &config,
+            SaTokenEventBus::new(),
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn authz_vague_star_covers_three_segment() {
+        let svc = authz(PermissionMatchMode::Vague);
+        svc.set_permissions("default", "u1", &["user:*".to_string()])
+            .await
+            .unwrap();
+        assert!(
+            svc.has_permission("default", "u1", "user:profile:edit")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn authz_ant_star_does_not_cover_three_segment() {
+        let svc = authz(PermissionMatchMode::Ant);
+        svc.set_permissions("default", "u1", &["user:*".to_string()])
+            .await
+            .unwrap();
+        assert!(
+            !svc.has_permission("default", "u1", "user:profile:edit")
+                .await
+                .unwrap()
+        );
+    }
+
+    #[tokio::test]
+    async fn authz_vague_role_wildcard_uses_same_matcher() {
+        let config = Arc::new(SaTokenConfig {
+            permission_match_mode: PermissionMatchMode::Vague,
+            role_wildcard: true,
+            ..Default::default()
+        });
+        let dao = Arc::new(SaTokenDao::new(
+            Arc::new(MemoryStorage::new()),
+            Arc::clone(&config),
+        ));
+        let svc = AuthzService::new(
+            Arc::new(GrantRepo::new(dao)),
+            &config,
+            SaTokenEventBus::new(),
+            None,
+        );
+        svc.set_roles("default", "u1", &["user:*".to_string()])
+            .await
+            .unwrap();
+        assert!(
+            svc.has_role("default", "u1", "user:profile:edit")
+                .await
+                .unwrap()
+        );
     }
 }

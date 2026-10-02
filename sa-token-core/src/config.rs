@@ -237,9 +237,14 @@ pub struct SaTokenConfig {
     /// When true, role checks honour `*` wildcards (default `false` = exact).
     /// 为 true 时角色校验识别 `*` 通配（默认 `false`，精确匹配）。
     ///
-    /// Enabling routes roles through the same segment matcher used for permissions.
+    /// Enabling routes roles through the same matcher used for permissions.
     #[serde(default)]
     pub role_wildcard: bool,
+
+    /// Permission (and optional role) matching algorithm. Default remains Ant.
+    /// 权限（及可选角色）匹配算法。默认仍为 Ant，不破坏现有用户。
+    #[serde(default)]
+    pub permission_match_mode: PermissionMatchMode,
 
     // ========== 上下文行为 | Context Behavior ==========
     /// `with_current_mut` 在无上下文时是否自动创建空上下文（默认 false，返回 None）
@@ -399,6 +404,7 @@ impl Default for SaTokenConfig {
             grant_request_scope: true,
             grant_write_policy: GrantWritePolicy::Warn,
             role_wildcard: false,
+            permission_match_mode: PermissionMatchMode::Ant,
             context_auto_create: false,
             http_basic: String::new(),
             same_token_timeout: 86400,
@@ -566,6 +572,23 @@ pub enum ReplacedRange {
     CurrDeviceType,
     /// 全部设备类型 | All device types
     AllDeviceType,
+}
+
+/// Permission / role matching algorithm.
+/// 权限 / 角色匹配算法。
+///
+/// Default is Ant (segment wildcards). [`PermissionMatchMode::Vague`] ports
+/// Java `SaFoxUtil.vagueMatch` so `*` spans `:` segments.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PermissionMatchMode {
+    /// Ant-style `:` segment matching (`user:*` does not cover `user:add:vip`).
+    /// Ant 分段匹配（`user:*` 不覆盖 `user:add:vip`）。
+    #[default]
+    Ant,
+    /// Java `vagueMatch`: `*` matches any character sequence, including across `:`.
+    /// Java `vagueMatch`：`*` 匹配任意字符序列，可跨 `:` 段。
+    Vague,
 }
 
 /// 注入只读 `StpInterface` 时，权限/角色**写操作**的处理策略。
@@ -929,6 +952,13 @@ impl SaTokenConfigBuilder {
     /// 开关角色通配符匹配（默认精确匹配）。
     pub fn role_wildcard(mut self, enabled: bool) -> Self {
         self.config.role_wildcard = enabled;
+        self
+    }
+
+    /// Set permission matching mode (default [`PermissionMatchMode::Ant`]).
+    /// 设置权限匹配模式（默认 [`PermissionMatchMode::Ant`]）。
+    pub fn permission_match_mode(mut self, mode: PermissionMatchMode) -> Self {
+        self.config.permission_match_mode = mode;
         self
     }
 

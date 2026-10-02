@@ -59,8 +59,8 @@ pub mod error;
 mod manager;
 
 pub use config::{
-    GrantWritePolicy, LogoutMode, LogoutRange, ReplacedLoginExitMode, ReplacedRange, SaTokenConfig,
-    TokenCookieConfig,
+    GrantWritePolicy, LogoutMode, LogoutRange, PermissionMatchMode, ReplacedLoginExitMode,
+    ReplacedRange, SaTokenConfig, TokenCookieConfig,
 };
 pub use context::{
     GrantScope, RequestAuthMeta, SaTokenContext, SaTokenContextBuilder, SaTokenContextInner,
@@ -105,7 +105,9 @@ pub use online::{
     DistributedOnlineStore, InMemoryPusher, LocalOnlineStore, MessagePusher, MessageType,
     OnlineManager, OnlineStore, OnlineUser, PushMessage, StoredOnlineUser,
 };
-pub use permission::{AntPermissionMatcher, ExactMatcher, PermissionMatcher};
+pub use permission::{
+    AntPermissionMatcher, ExactMatcher, PermissionMatcher, VaguePermissionMatcher,
+};
 pub use refresh::RefreshTokenManager;
 pub use router::{
     AuthFlowResult, PathAuthConfig, extract_token, extract_token_from, match_any, match_path,

@@ -27,6 +27,19 @@ SaTokenConfig::builder()
 
 也可在 Manager 上注入自定义 `PermissionMatcher`（见 `with_permission_matcher` / `with_role_matcher`）。
 
+## Vague 匹配（对齐 Java）
+
+默认仍是 **Ant**。设置 `permission_match_mode(PermissionMatchMode::Vague)` 后走 Java `SaFoxUtil.vagueMatch`：`*` 匹配任意字符序列（含跨 `:` 段），因此 `user:*` 覆盖 `user:profile:edit`。
+
+```rust
+SaTokenConfig::builder()
+    .storage(storage)
+    .permission_match_mode(PermissionMatchMode::Vague)
+    .try_build()?;
+```
+
+开启 `role_wildcard(true)` 时，角色使用同一匹配器（Vague 模式下角色也走 Vague）。
+
 ## has_* vs check_*
 
 | 系列 | 返回值 | 典型用途 |
