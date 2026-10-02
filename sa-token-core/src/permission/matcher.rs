@@ -206,6 +206,8 @@ impl VaguePermissionMatcher {
     }
 
     /// Port of Java `SaFoxUtil.vagueMatchMethod`. Rolling-array DP.
+    /// Indices stay in `0..=len` by construction (`j in 1..=n`, `i in 1..=m`).
+    #[allow(clippy::indexing_slicing)]
     fn vague_match_dp(pattern: &[u8], s: &[u8]) -> bool {
         let n = pattern.len();
         let m = s.len();

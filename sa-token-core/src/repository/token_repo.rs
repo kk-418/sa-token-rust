@@ -101,10 +101,7 @@ impl TokenRepo {
         if !self.dao.exists(key).await? {
             return Ok(Some(new));
         }
-        Ok(match self.dao.ttl(key).await? {
-            None => None,
-            Some(existing) => Some(existing.max(new)),
-        })
+        Ok(self.dao.ttl(key).await?.map(|existing| existing.max(new)))
     }
 
     /// Set remaining TTL; `None` rewrites the scalar as permanent.
