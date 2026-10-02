@@ -216,11 +216,44 @@ impl StpUtil {
         login_id: impl LoginId,
         timeout_seconds: i64,
     ) -> SaTokenResult<TokenValue> {
-        let req = LoginRequest::new(login_id.to_login_id()).timeout(timeout_seconds);
-        let token = Self::try_get_manager()?.auth_service().login(req).await?;
+        Self::login_by_request(LoginRequest::new(login_id.to_login_id()).timeout(timeout_seconds))
+            .await
+    }
+
+    /// Login with remember-me vs session cookie (Java `StpUtil.login(id, boolean)`).
+    /// 登录并指定记住我 / 会话 Cookie，对齐 Java `StpUtil.login(id, boolean)`。
+    ///
+    /// `true`：Cookie Max-Age = token timeout（持久 Cookie）。
+    /// `false`：Cookie Max-Age = `-1`（会话 Cookie）。
+    pub async fn login_with_lasting_cookie(
+        login_id: impl LoginId,
+        is_lasting_cookie: bool,
+    ) -> SaTokenResult<TokenValue> {
+        Self::login_by_request(
+            LoginRequest::new(login_id.to_login_id()).is_lasting_cookie(is_lasting_cookie),
+        )
+        .await
+    }
+
+    /// Login using a [`LoginRequest`] (Java `StpUtil.login(id, SaLoginParameter)`).
+    /// 使用 [`LoginRequest`] 登录，对齐 Java `StpUtil.login(id, SaLoginParameter)`。
+    ///
+    /// Cookie Max-Age 走 `req.cookie_max_age(timeout)`：有 `timeout_secs` 用它，
+    /// 否则用 `expire_time` 剩余秒数，再否则用 `manager.config.timeout`。
+    pub async fn login_by_request(req: LoginRequest) -> SaTokenResult<TokenValue> {
+        let manager = Self::try_get_manager()?;
+        let timeout = if let Some(timeout_secs) = req.timeout_secs {
+            timeout_secs
+        } else if let Some(expire_time) = req.expire_time {
+            (expire_time - chrono::Utc::now()).num_seconds().max(0)
+        } else {
+            manager.config.timeout
+        };
+        let max_age = req.cookie_max_age(timeout);
+        let token = manager.auth_service().login(req).await?;
         Self::record_pending_cookie(PendingCookie::Write {
             token: token.clone(),
-            max_age: timeout_seconds,
+            max_age,
         });
         Ok(token)
     }
@@ -1895,6 +1928,7 @@ pub struct TokenBuilder {
     nonce: Option<String>,
     expire_time: Option<chrono::DateTime<chrono::Utc>>,
     timeout_secs: Option<i64>,
+    is_lasting_cookie: bool,
 }
 
 impl std::fmt::Debug for TokenBuilder {
@@ -1914,6 +1948,7 @@ impl TokenBuilder {
             nonce: None,
             expire_time: None,
             timeout_secs: None,
+            is_lasting_cookie: true,
         }
     }
 
@@ -1970,25 +2005,24 @@ impl TokenBuilder {
         self
     }
 
+    /// Persistent cookie (`true`) vs session cookie (`false`). Java `isLastingCookie`.
+    /// `true` 持久 Cookie；`false` 会话 Cookie。对齐 Java `isLastingCookie`。
+    pub fn is_lasting_cookie(mut self, lasting: bool) -> Self {
+        self.is_lasting_cookie = lasting;
+        self
+    }
+
     /// 执行登录：组装 `LoginRequest`（含 timeout_secs / expire_time / device / extra / nonce / login_type），
-    /// 走 `auth_service().login`。
+    /// 走 `StpUtil::login_by_request`（Cookie Max-Age 经 `cookie_max_age`）。
     ///
     /// 如果不提供 login_id 参数，则使用构建器中的 login_id。
     /// 一次性带齐可选字段，由 AuthService 阶段写入保证索引/终端/映射一致。
     pub async fn login<T: LoginId>(self, login_id: Option<T>) -> SaTokenResult<TokenValue> {
-        let manager = StpUtil::try_get_manager()?;
         let final_login_id = match login_id {
             Some(id) => id.to_login_id(),
             None => self.login_id,
         };
-        let max_age = if let Some(timeout_secs) = self.timeout_secs {
-            timeout_secs
-        } else if let Some(expire_time) = self.expire_time {
-            (expire_time - chrono::Utc::now()).num_seconds().max(0)
-        } else {
-            manager.config.timeout
-        };
-        let mut req = LoginRequest::new(final_login_id);
+        let mut req = LoginRequest::new(final_login_id).is_lasting_cookie(self.is_lasting_cookie);
         if let Some(login_type) = self.login_type {
             req = req.login_type(login_type);
         }
@@ -2007,12 +2041,7 @@ impl TokenBuilder {
         if let Some(timeout_secs) = self.timeout_secs {
             req = req.timeout(timeout_secs);
         }
-        let token = manager.auth_service().login(req).await?;
-        StpUtil::record_pending_cookie(PendingCookie::Write {
-            token: token.clone(),
-            max_age,
-        });
-        Ok(token)
+        StpUtil::login_by_request(req).await
     }
 }
 
@@ -2046,5 +2075,23 @@ mod tests {
         config.is_read_cookie = true;
         config.cookie.is_write_cookie = false;
         assert!(!StpUtil::cookie_write_enabled_for(&config));
+    }
+
+    #[test]
+    fn cookie_max_age_session_vs_lasting() {
+        assert_eq!(LoginRequest::new("u").cookie_max_age(3600), 3600);
+        assert_eq!(
+            LoginRequest::new("u")
+                .is_lasting_cookie(false)
+                .cookie_max_age(3600),
+            -1
+        );
+        assert_eq!(
+            LoginRequest::new("u")
+                .is_lasting_cookie(true)
+                .timeout(7200)
+                .cookie_max_age(7200),
+            7200
+        );
     }
 }

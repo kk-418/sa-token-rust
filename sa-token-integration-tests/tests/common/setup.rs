@@ -64,6 +64,15 @@ pub fn jwt_config(secret: &str) -> SaTokenConfig {
         .build_config()
 }
 
+/// Build a config for JWT Stateless testing.
+pub fn jwt_stateless_config(secret: &str) -> SaTokenConfig {
+    SaTokenConfig::builder()
+        .token_style(TokenStyle::JwtStateless)
+        .jwt_secret_key(secret)
+        .timeout(3600)
+        .build_config()
+}
+
 /// Build a config with a short timeout (in seconds).
 pub fn short_timeout_config(timeout_secs: i64) -> SaTokenConfig {
     SaTokenConfig::builder()

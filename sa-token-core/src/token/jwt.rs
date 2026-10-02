@@ -4,8 +4,13 @@
 //!
 //! ## Mode notes | 模式说明
 //!
-//! 当前 Rust 实现为 **Simple 风格**：`token` 本身是 JWT，但 Session / 权限等仍走 [`SaStorage`]。
-//! Stateless（无状态 Session）与 Mixin（混合映射）模式尚未全量移植；logout 仍会清理 storage 中的 token 映射。
+//! **Simple (`TokenStyle::Jwt`)**：token 本身是 JWT，Session / 权限等仍走 [`SaStorage`]；
+//! `get_token_info` / `is_valid` 读仓储，logout 清理 token 映射。
+//!
+//! **Stateless (`TokenStyle::JwtStateless`)**：登录不写 token_info / login:token / session；
+//! `get_token_info` / `is_valid` 仅验签并从 claims 合成 `TokenInfo`。
+//! 踢人、按 loginId 登出、顶号返回 `SaTokenError::ApiDisabled`。
+//! Mixin（混合映射）尚未移植。
 //!
 //! JWT 生成失败时见 [`SaTokenConfig::jwt_fallback_on_error`]：默认 `false`（失败返回 `ConfigError`）；为 `true` 时回退 UUID 并 `tracing::warn`。
 //! On JWT generation failure see [`SaTokenConfig::jwt_fallback_on_error`]: default `false` (returns `ConfigError`); when `true`, falls back to UUID with `tracing::warn`.

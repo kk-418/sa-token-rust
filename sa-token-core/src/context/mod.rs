@@ -94,6 +94,18 @@ pub struct RequestAuthMeta {
     /// Same-Token header value (header name from config).
     /// Same-Token 头的值（头名来自配置）。
     pub same_token: Option<String>,
+    /// HTTP method (`GET` / `POST` / …). Used by HTTP Digest.
+    /// HTTP 方法。HTTP Digest 计算 `md5(method:uri)` 时使用。
+    pub method: Option<String>,
+    /// Request path / URI. Used by HTTP Digest.
+    /// 请求路径 / URI。HTTP Digest 使用。
+    pub path: Option<String>,
+    /// Named request parameters (query / mapped form). Used by API Key read.
+    /// 具名请求参数。API Key 从参数读取时使用。
+    pub params: HashMap<String, String>,
+    /// Extra named headers (lower-cased keys). Used by API Key header read.
+    /// 额外请求头（键小写）。API Key 从头读取时使用。
+    pub headers: HashMap<String, String>,
 }
 
 impl RequestAuthMeta {
@@ -113,9 +125,19 @@ impl RequestAuthMeta {
                 None
             }
         });
+        let mut headers = req.get_headers();
+        if headers.is_empty() {
+            if let Some(ref v) = authorization {
+                headers.insert("authorization".to_string(), v.clone());
+            }
+        }
         Self {
             authorization,
             same_token,
+            method: Some(req.get_method()),
+            path: Some(req.get_uri()),
+            params: req.get_params(),
+            headers,
         }
     }
 }

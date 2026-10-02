@@ -13,9 +13,11 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::{Duration as ChronoDuration, Utc};
+use chrono::{DateTime, Duration as ChronoDuration, Utc};
 
-use crate::config::{LogoutMode, LogoutRange, ReplacedLoginExitMode, ReplacedRange, SaTokenConfig};
+use crate::config::{
+    LogoutMode, LogoutRange, ReplacedLoginExitMode, ReplacedRange, SaTokenConfig, TokenStyle,
+};
 use crate::dao::SaTokenDao;
 use crate::distributed::DistributedSessionManager;
 use crate::error::{SaTokenError, SaTokenResult};
@@ -28,7 +30,7 @@ use crate::repository::{SessionRepo, TokenIdMapping, TokenRepo};
 use crate::service::compensate::LoginCompensator;
 use crate::service::login_request::LoginRequest;
 use crate::session::SaTerminalInfo;
-use crate::token::{TokenGenerator, TokenInfo, TokenValue};
+use crate::token::{JwtAlgorithm, JwtManager, TokenGenerator, TokenInfo, TokenValue};
 
 /// 下线时解析出的账号身份 | Account identity resolved during logout
 struct LogoutIdentity {
@@ -97,6 +99,68 @@ impl AuthService {
         Ok(SaKeys::account_ns(login_type, &id))
     }
 
+    /// JWT Stateless 模式（Java `StpLogicJwtForStateless`）。
+    fn is_jwt_stateless(&self) -> bool {
+        matches!(self.config.token_style, TokenStyle::JwtStateless)
+    }
+
+    /// 踢人 / 按账号登出 / 顶号在 Stateless 下不可用。
+    fn reject_jwt_stateless(&self) -> SaTokenResult<()> {
+        if self.is_jwt_stateless() {
+            Err(SaTokenError::ApiDisabled("jwt-stateless".into()))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// 按当前配置构造验签用 `JwtManager`。
+    fn jwt_manager(&self) -> SaTokenResult<JwtManager> {
+        let secret = self
+            .config
+            .jwt_secret_key
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .ok_or_else(|| {
+                SaTokenError::ConfigError(
+                    "jwt_secret_key is required when token_style=JwtStateless".into(),
+                )
+            })?;
+        let algorithm = match self
+            .config
+            .jwt_algorithm
+            .as_deref()
+            .map(str::to_ascii_uppercase)
+            .as_deref()
+        {
+            Some("HS384") => JwtAlgorithm::HS384,
+            Some("HS512") => JwtAlgorithm::HS512,
+            Some("RS256") => JwtAlgorithm::RS256,
+            Some("RS384") => JwtAlgorithm::RS384,
+            Some("RS512") => JwtAlgorithm::RS512,
+            Some("ES256") => JwtAlgorithm::ES256,
+            Some("ES384") => JwtAlgorithm::ES384,
+            _ => JwtAlgorithm::HS256,
+        };
+        let mut mgr = JwtManager::with_algorithm(secret, algorithm);
+        if let Some(ref issuer) = self.config.jwt_issuer {
+            mgr = mgr.set_issuer(issuer);
+        }
+        if let Some(ref audience) = self.config.jwt_audience {
+            mgr = mgr.set_audience(audience);
+        }
+        Ok(mgr)
+    }
+
+    /// 验签 JWT 并从 claims 合成 `TokenInfo`（不读 storage）。
+    fn token_info_from_jwt(&self, token: &TokenValue) -> SaTokenResult<TokenInfo> {
+        let claims = self.jwt_manager()?.validate(token.as_str())?;
+        let mut info = TokenInfo::new(token.clone(), claims.login_id);
+        if let Some(exp) = claims.exp {
+            info.expire_time = DateTime::<Utc>::from_timestamp(exp, 0);
+        }
+        Ok(info)
+    }
+
     /// 登录主流程：阶段化写入 + 逆序补偿 + CAS 提交点。
     pub async fn login(&self, req: LoginRequest) -> SaTokenResult<TokenValue> {
         let login_type = req.effective_login_type().to_string();
@@ -129,7 +193,8 @@ impl AuthService {
                 .await?;
         }
 
-        if self.config.is_share
+        if !self.is_jwt_stateless()
+            && self.config.is_share
             && let Some(existing) = self
                 .token_repo
                 .get_login_mapping(&login_type, &login_id)
@@ -152,6 +217,17 @@ impl AuthService {
 
         let mut token_info = self.build_token_info(&req, &login_type).await?;
         let token = token_info.token.clone();
+
+        if self.is_jwt_stateless() {
+            compensator.commit();
+            let event =
+                SaTokenEvent::login(login_id.clone(), token.as_str()).with_login_type(&login_type);
+            self.event_bus.publish(event).await;
+            if self.config.is_log {
+                tracing::info!(login_id = %login_id, "login success");
+            }
+            return Ok(token);
+        }
 
         let mapping_before = self
             .token_repo
@@ -290,6 +366,7 @@ impl AuthService {
                 let extra = req.extra_data.clone();
                 let login_id = req.login_id.clone();
                 let cfg = self.config.clone();
+                let skip_store_check = self.is_jwt_stateless();
                 crate::token::generate_unique(
                     cfg.max_try_times,
                     || match extra.as_ref() {
@@ -301,7 +378,13 @@ impl AuthService {
                     |t| {
                         let repo = self.token_repo.clone();
                         let token = t.to_string();
-                        async move { Ok(repo.get_token_info(&token).await?.is_some()) }
+                        async move {
+                            if skip_store_check {
+                                Ok(false)
+                            } else {
+                                Ok(repo.get_token_info(&token).await?.is_some())
+                            }
+                        }
                     },
                 )
                 .await?
@@ -518,6 +601,9 @@ impl AuthService {
 
     /// 登出（LOGOUT 模式）| Logout
     pub async fn logout(&self, token: &TokenValue, keep_token_session: bool) -> SaTokenResult<()> {
+        if self.is_jwt_stateless() {
+            return Ok(());
+        }
         let result = match self.config.logout_range {
             LogoutRange::Token => {
                 self.logout_internal(token, LogoutMode::Logout, keep_token_session)
@@ -543,12 +629,14 @@ impl AuthService {
         token: &TokenValue,
         keep_token_session: bool,
     ) -> SaTokenResult<()> {
+        self.reject_jwt_stateless()?;
         self.logout_internal(token, LogoutMode::KickOut, keep_token_session)
             .await
     }
 
     /// 顶下线（REPLACED 模式，标记 -4）| Replace, marker `-4`
     pub async fn logout_replaced(&self, token: &TokenValue) -> SaTokenResult<()> {
+        self.reject_jwt_stateless()?;
         self.logout_internal(
             token,
             LogoutMode::Replaced,
@@ -728,6 +816,7 @@ impl AuthService {
     /// Always uses per-token [`logout_internal`] so `logout_range=Account` cannot recurse.
     /// 始终按单 token 调用 [`logout_internal`]，避免 `logout_range=Account` 时递归。
     pub async fn logout_by_login_id(&self, login_type: &str, login_id: &str) -> SaTokenResult<()> {
+        self.reject_jwt_stateless()?;
         let tokens = self.collect_account_tokens(login_type, login_id).await?;
         let keep = self.config.is_logout_keep_token_session;
         for t in tokens {
@@ -743,6 +832,7 @@ impl AuthService {
 
     /// 按账号踢下线全部 token（KICKOUT 模式）。
     pub async fn kick_out(&self, login_type: &str, login_id: &str) -> SaTokenResult<()> {
+        self.reject_jwt_stateless()?;
         if let Some(online) = &self.online_manager {
             let _ = online
                 .mark_offline_all_with_type(login_type, login_id)
@@ -773,6 +863,9 @@ impl AuthService {
 
     /// 读取并校验 token（按策略自动续签）。
     pub async fn get_token_info(&self, token: &TokenValue) -> SaTokenResult<TokenInfo> {
+        if self.is_jwt_stateless() {
+            return self.token_info_from_jwt(token);
+        }
         match self.token_repo.load_valid_token_info(token).await {
             Ok(info) => Ok(info),
             Err(SaTokenError::TokenExpired) => {

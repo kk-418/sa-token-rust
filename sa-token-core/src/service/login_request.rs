@@ -41,6 +41,11 @@ pub struct LoginRequest {
     /// Caller-supplied token value (SSO / migration); an empty string means
     /// "not preset" and the service layer will generate one.
     pub preset_token: Option<String>,
+    /// Whether the login cookie is persistent (Java `isLastingCookie`).
+    /// `true`（默认）：Cookie Max-Age = 本次 token timeout。
+    /// `false`：会话 Cookie（Max-Age &lt; 0 / 不写 Max-Age）。
+    /// Persistent login cookie (Java `isLastingCookie`). Default `true`.
+    pub is_lasting_cookie: bool,
 }
 
 impl LoginRequest {
@@ -58,6 +63,7 @@ impl LoginRequest {
             expire_time: None,
             timeout_secs: None,
             preset_token: None,
+            is_lasting_cookie: true,
         }
     }
 
@@ -102,6 +108,23 @@ impl LoginRequest {
     pub fn preset_token(mut self, token: impl Into<String>) -> Self {
         self.preset_token = Some(token.into());
         self
+    }
+
+    /// Persistent cookie (`true`) vs session cookie (`false`). Java `isLastingCookie`.
+    /// `true` 持久 Cookie；`false` 会话 Cookie。对齐 Java `isLastingCookie`。
+    pub fn is_lasting_cookie(mut self, lasting: bool) -> Self {
+        self.is_lasting_cookie = lasting;
+        self
+    }
+
+    /// Cookie Max-Age for this login: session cookie is `-1`, else `token_timeout`.
+    /// 本次登录 Cookie Max-Age：会话 Cookie 为 `-1`，否则为 `token_timeout`。
+    pub fn cookie_max_age(&self, token_timeout: i64) -> i64 {
+        if self.is_lasting_cookie {
+            token_timeout
+        } else {
+            -1
+        }
     }
 
     /// 规范化后的 login_type：空串一律回落到 `LOGIN_TYPE_DEFAULT`。

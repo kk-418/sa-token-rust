@@ -20,6 +20,7 @@
 //! let token = manager.login("user_123").await?;
 //! ```
 
+pub mod api_key;
 pub mod cleanup;
 pub mod codec;
 pub mod config;
@@ -29,6 +30,7 @@ pub mod disable;
 pub mod distributed;
 pub mod event;
 pub mod http_basic;
+pub mod http_digest;
 pub mod keys;
 pub mod nonce;
 pub mod oauth2;
@@ -52,6 +54,7 @@ pub mod temp_token;
 pub mod token;
 pub mod token_io;
 pub mod token_session;
+pub mod totp;
 pub mod util;
 pub mod ws;
 
@@ -85,6 +88,10 @@ pub use stp_interface::{StorageStpInterface, StpInterface};
 pub use util::{LoginId, StpUtil, TokenBuilder};
 
 // 重新导出核心类型
+pub use api_key::{
+    ApiKeyManager, ApiKeyModel, DEFAULT_NAMESPACE as API_KEY_DEFAULT_NAMESPACE,
+    DEFAULT_PREFIX as API_KEY_DEFAULT_PREFIX, DEFAULT_TIMEOUT as API_KEY_DEFAULT_TIMEOUT,
+};
 pub use cleanup::{BackgroundCleanupTask, CleanupConfig};
 pub use disable::{
     DEFAULT_DISABLE_LEVEL, DEFAULT_DISABLE_SERVICE, MIN_DISABLE_LEVEL, NOT_DISABLE_LEVEL,
@@ -97,6 +104,7 @@ pub use event::{
     DispatchMode, EventBusConfig, LoggingListener, SaTokenEvent, SaTokenEventBus, SaTokenEventType,
     SaTokenListener,
 };
+pub use http_digest::{SaHttpDigestModel, calc_response, check_user, check_user_realm};
 pub use nonce::{NonceManager, NonceRecord};
 pub use oauth2::{
     AccessToken, AuthorizationCode, CodeChallengeMethod, OAuth2Client, OAuth2Manager,
@@ -134,5 +142,9 @@ pub use token::{
 pub use token_io::{
     apply_token_prefix, delete_token_cookie, read_token, write_token_cookie,
     write_token_cookie_for_token, write_token_cookie_with_max_age,
+};
+pub use totp::{
+    SaTotpTemplate, check_totp, generate_google_secret_key, generate_google_secret_key_with_issuer,
+    generate_google_secret_key_with_secret, generate_secret_key, generate_totp, validate_totp,
 };
 pub use ws::{DefaultWsTokenExtractor, WsAuthInfo, WsAuthManager, WsTokenExtractor};

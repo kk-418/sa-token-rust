@@ -28,7 +28,7 @@ impl TokenGenerator {
             TokenStyle::Random32 => Self::generate_random_csprng(32),
             TokenStyle::Random64 => Self::generate_random_csprng(64),
             TokenStyle::Random128 => Self::generate_random_csprng(128),
-            TokenStyle::Jwt => Self::generate_jwt(config, login_id),
+            TokenStyle::Jwt | TokenStyle::JwtStateless => Self::generate_jwt(config, login_id),
             TokenStyle::Hash => Self::generate_hash(login_id),
             TokenStyle::Timestamp => Self::generate_timestamp(),
             TokenStyle::Tik => Self::generate_tik(),
@@ -42,7 +42,9 @@ impl TokenGenerator {
         extra_data: &serde_json::Value,
     ) -> SaTokenResult<TokenValue> {
         match config.token_style {
-            TokenStyle::Jwt => Self::generate_jwt_with_extra(config, login_id, extra_data),
+            TokenStyle::Jwt | TokenStyle::JwtStateless => {
+                Self::generate_jwt_with_extra(config, login_id, extra_data)
+            }
             _ => Self::generate_with_login_id(config, login_id),
         }
     }

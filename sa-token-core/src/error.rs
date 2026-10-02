@@ -220,6 +220,45 @@ pub enum SaTokenError {
         realm: String,
     },
 
+    /// HTTP Digest credentials missing or mismatch.
+    /// HTTP Digest 凭据缺失或不匹配。
+    #[error("HTTP Digest authentication failed")]
+    DigestAuthFailed {
+        /// `WWW-Authenticate: Digest ...` challenge value (without the header name).
+        /// `WWW-Authenticate: Digest ...` 挑战值（不含头名）。
+        www_authenticate: String,
+    },
+
+    /// TOTP code is missing or does not match.
+    /// TOTP 验证码缺失或不匹配。
+    #[error("TOTP authentication failed")]
+    TotpAuthFailed,
+
+    /// API Key is missing or unknown.
+    /// API Key 缺失或未知。
+    #[error("Invalid API Key")]
+    ApiKeyInvalid,
+
+    /// API Key past `expiresTime`.
+    /// API Key 已过期。
+    #[error("API Key has expired")]
+    ApiKeyExpired,
+
+    /// API Key `isValid` is false.
+    /// API Key 已被禁用。
+    #[error("API Key is disabled")]
+    ApiKeyDisabled,
+
+    /// API Key lacks a required scope.
+    /// API Key 缺少所需 scope。
+    #[error("API Key missing scope '{0}'")]
+    ApiKeyScopeDenied(String),
+
+    /// Feature is disabled in the current token mode (Java `ApiDisabledException`).
+    /// 当前 token 模式下该能力不可用（对齐 Java `ApiDisabledException`）。
+    #[error("API disabled: {0}")]
+    ApiDisabled(String),
+
     /// Request signature does not match.
     /// 请求签名不匹配。
     #[error("Invalid request signature")]

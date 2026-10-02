@@ -436,7 +436,7 @@ impl SaTokenConfig {
     /// Reject Jwt style without a usable secret. Call from builders.
     /// Jwt 风格必须带可用密钥。由 builder 调用。
     pub fn validate_jwt(&self) -> SaTokenResult<()> {
-        if matches!(self.token_style, TokenStyle::Jwt) {
+        if matches!(self.token_style, TokenStyle::Jwt | TokenStyle::JwtStateless) {
             match self.jwt_secret_key.as_deref() {
                 Some(s) if !s.trim().is_empty() => Ok(()),
                 _ => Err(SaTokenError::ConfigError(
@@ -529,6 +529,10 @@ pub enum TokenStyle {
     /// JWT 风格（JSON Web Token）| JWT style (JSON Web Token)
     #[serde(alias = "jwt")]
     Jwt,
+    /// JWT Stateless（无状态；登录不写 token→loginId 映射，对应 Java `StpLogicJwtForStateless` 模式）。
+    /// JWT Stateless (no token→loginId mapping; Java `StpLogicJwtForStateless` mode).
+    #[serde(alias = "jwt-stateless")]
+    JwtStateless,
     /// Hash 风格（SHA256）| Hash style (SHA256)
     #[serde(alias = "hash")]
     Hash,
