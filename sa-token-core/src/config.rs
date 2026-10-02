@@ -91,6 +91,13 @@ pub struct SaTokenConfig {
     #[serde(default)]
     pub token_prefix: Option<String>,
 
+    /// When true, a cookie token that lacks `token_prefix` is filled before prefix checks.
+    /// Aligns with Java `cookieAutoFillPrefix`; enable when token_prefix is set but the cookie stores the token without it.
+    /// 为 true 时，Cookie 里的裸 token 在前缀校验前自动补上 `token_prefix`。
+    /// 对齐 Java `cookieAutoFillPrefix`；配置了 token_prefix 而 Cookie 存无前缀 token 时启用。
+    #[serde(default)]
+    pub cookie_auto_fill_prefix: bool,
+
     /// Cookie write settings (opt-in).
     /// Cookie 下发配置（默认不写）。
     #[serde(default)]
@@ -357,6 +364,7 @@ impl Default for SaTokenConfig {
             is_read_header: true,
             is_read_body: true,
             token_prefix: None,
+            cookie_auto_fill_prefix: false,
             cookie: TokenCookieConfig::default(),
             jwt_secret_key: None,
             jwt_algorithm: Some("HS256".to_string()),
@@ -490,22 +498,31 @@ impl SaTokenConfig {
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub enum TokenStyle {
     /// UUID 风格 | UUID style
+    #[serde(alias = "uuid")]
     Uuid,
     /// 简化 UUID（去掉横杠）| Simple UUID (without hyphens)
+    #[serde(alias = "simple-uuid")]
     SimpleUuid,
     /// 32 位随机字符串 | 32-character random string
+    #[serde(alias = "random-32")]
     Random32,
     /// 64 位随机字符串 | 64-character random string
+    #[serde(alias = "random-64")]
     Random64,
     /// 128 位随机字符串 | 128-character random string
+    #[serde(alias = "random-128")]
     Random128,
     /// JWT 风格（JSON Web Token）| JWT style (JSON Web Token)
+    #[serde(alias = "jwt")]
     Jwt,
     /// Hash 风格（SHA256）| Hash style (SHA256)
+    #[serde(alias = "hash")]
     Hash,
     /// 时间戳风格（毫秒时间戳 + 随机数）| Timestamp style (ms timestamp + random)
+    #[serde(alias = "timestamp")]
     Timestamp,
     /// Tik 风格（短小的 8 位字符）| Tik style (short 8-character token)
+    #[serde(alias = "tik")]
     Tik,
 }
 
@@ -685,6 +702,13 @@ impl SaTokenConfigBuilder {
     /// 自定义 token 前缀；空字符串在构建时拒绝。
     pub fn token_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.config.token_prefix = Some(prefix.into());
+        self
+    }
+
+    /// Fill `token_prefix` onto a bare cookie token before prefix checks (Java `cookieAutoFillPrefix`).
+    /// 读 Cookie 时给裸 token 补前缀（对齐 Java `cookieAutoFillPrefix`）。
+    pub fn cookie_auto_fill_prefix(mut self, enabled: bool) -> Self {
+        self.config.cookie_auto_fill_prefix = enabled;
         self
     }
 

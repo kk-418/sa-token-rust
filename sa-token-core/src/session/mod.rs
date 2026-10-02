@@ -109,6 +109,12 @@ impl SaSession {
         self.data.remove(key)
     }
 
+    /// Java `SaSession.delete` alias of [`Self::remove`].
+    /// Java `SaSession.delete` 的别名，行为同 [`Self::remove`]。
+    pub fn delete(&mut self, key: &str) -> Option<serde_json::Value> {
+        self.remove(key)
+    }
+
     /// 清空 session | Clear Session
     ///
     /// 删除所有存储的数据 | Remove all stored data

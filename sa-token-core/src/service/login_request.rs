@@ -30,6 +30,12 @@ pub struct LoginRequest {
     /// 自定义过期时间，缺省时由 config.timeout 推导
     /// Custom expiry; derived from `config.timeout` when absent
     pub expire_time: Option<DateTime<Utc>>,
+    /// Per-login TTL in seconds. Overrides `expire_time` and global `config.timeout`.
+    /// `Some(n)` with `n > 0` = live `n` seconds; `Some(n)` with `n <= 0` = never expire.
+    /// `None` = follow `expire_time` / global timeout.
+    /// 本次登录 TTL（秒）。覆盖 `expire_time` 与全局 `config.timeout`。
+    /// `Some(n>0)` 存活 n 秒；`Some(n<=0)` 永久；`None` 走 `expire_time` / 全局 timeout。
+    pub timeout_secs: Option<i64>,
     /// 调用方预置的 token 值（SSO / 迁移场景复用既有 token）。
     /// 为空字符串时视为未预置，由服务层生成。
     /// Caller-supplied token value (SSO / migration); an empty string means
@@ -50,6 +56,7 @@ impl LoginRequest {
             extra_data: None,
             nonce: None,
             expire_time: None,
+            timeout_secs: None,
             preset_token: None,
         }
     }
@@ -81,6 +88,13 @@ impl LoginRequest {
     /// 设置自定义过期时间 | Set a custom expiry
     pub fn expire_time(mut self, t: DateTime<Utc>) -> Self {
         self.expire_time = Some(t);
+        self
+    }
+
+    /// Per-login TTL in seconds (Java `StpUtil.login(id, timeout)`).
+    /// 本次登录有效期（秒），对齐 Java `StpUtil.login(id, timeout)`。
+    pub fn timeout(mut self, seconds: i64) -> Self {
+        self.timeout_secs = Some(seconds);
         self
     }
 

@@ -314,7 +314,13 @@ impl AuthService {
         info.nonce = req.nonce.clone();
         info.update_active_time();
 
-        if let Some(expire) = req.expire_time {
+        if let Some(secs) = req.timeout_secs {
+            if secs > 0 {
+                info.expire_time = Some(Utc::now() + ChronoDuration::seconds(secs));
+            } else {
+                info.expire_time = None;
+            }
+        } else if let Some(expire) = req.expire_time {
             info.expire_time = Some(expire);
         } else if let Some(timeout) = self.config.timeout_duration() {
             let d = ChronoDuration::from_std(timeout).map_err(|_| {

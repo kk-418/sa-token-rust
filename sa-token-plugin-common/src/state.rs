@@ -164,6 +164,12 @@ impl SaTokenStateBuilder {
         self
     }
 
+    /// Fill `token_prefix` onto a bare cookie token (Java `cookieAutoFillPrefix`).
+    pub fn cookie_auto_fill_prefix(mut self, enabled: bool) -> Self {
+        self.config_builder = self.config_builder.cookie_auto_fill_prefix(enabled);
+        self
+    }
+
     /// Opt-in cookie write (default false).
     pub fn is_write_cookie(mut self, write: bool) -> Self {
         self.config_builder = self.config_builder.is_write_cookie(write);

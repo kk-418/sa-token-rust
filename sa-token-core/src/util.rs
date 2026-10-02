@@ -19,7 +19,7 @@ use crate::event::{SaTokenEventBus, SaTokenListener};
 use crate::keys::LOGIN_TYPE_DEFAULT;
 use crate::session::SaSession;
 use crate::token::{TokenInfo, TokenValue};
-use crate::{SaTokenError, SaTokenManager, SaTokenResult};
+use crate::{LoginRequest, SaTokenError, SaTokenManager, SaTokenResult};
 
 /// 全局 SaTokenManager 实例（标准库 OnceLock，Rust 1.70+）
 static GLOBAL_MANAGER: OnceLock<Arc<SaTokenManager>> = OnceLock::new();
@@ -202,6 +202,16 @@ impl StpUtil {
     /// ```
     pub async fn login(login_id: impl LoginId) -> SaTokenResult<TokenValue> {
         Self::try_get_manager()?.login(login_id.to_login_id()).await
+    }
+
+    /// Login with a per-token timeout in seconds (Java `StpUtil.login(id, timeout)`).
+    /// 登录并指定本次有效期（秒），对齐 Java `StpUtil.login(id, timeout)`。
+    pub async fn login_with_timeout(
+        login_id: impl LoginId,
+        timeout_seconds: i64,
+    ) -> SaTokenResult<TokenValue> {
+        let req = LoginRequest::new(login_id.to_login_id()).timeout(timeout_seconds);
+        Self::try_get_manager()?.auth_service().login(req).await
     }
 
     /// `login_with_type` — login with type | `login_with_type`
@@ -580,6 +590,16 @@ impl StpUtil {
         Self::get_session_with_type(login_type.as_ref(), login_id).await
     }
 
+    /// Get the current account Session (Java `StpUtil.getSession()`).
+    /// 获取当前登录账号的 Session（对齐 Java `StpUtil.getSession()`）。
+    ///
+    /// 无请求上下文时返回 `NotLogin`。
+    /// Returns `NotLogin` when there is no request context.
+    pub async fn get_session_current() -> SaTokenResult<SaSession> {
+        let login_id = Self::get_login_id_as_string().await?;
+        Self::get_session(login_id).await
+    }
+
     /// 保存 Session
     pub async fn save_session(session: &SaSession) -> SaTokenResult<()> {
         Self::try_get_manager()?.save_session(session).await
@@ -618,6 +638,79 @@ impl StpUtil {
         let login_type = Self::resolve_login_type();
         let session = Self::get_session_with_type(login_type.as_ref(), login_id).await?;
         Ok(session.get::<T>(key))
+    }
+
+    /// Remove a session key (Java `getSession().delete(key)`).
+    /// 删除 Session 中的键（对齐 Java `getSession().delete(key)`）。
+    pub async fn remove_session_value(login_id: impl LoginId, key: &str) -> SaTokenResult<()> {
+        let mut session = Self::get_session(login_id).await?;
+        session.delete(key);
+        Self::save_session(&session).await
+    }
+
+    // ==================== 搜索 | Search ====================
+
+    /// Search token values (Java `StpUtil.searchTokenValue`).
+    /// 搜索 token 值（对齐 Java `StpUtil.searchTokenValue`）。
+    pub async fn search_token_value(
+        keyword: impl AsRef<str>,
+        start: i64,
+        size: i64,
+        sort_asc: bool,
+    ) -> SaTokenResult<Vec<String>> {
+        let login_type = Self::resolve_login_type();
+        Self::try_get_manager()?
+            .dao()
+            .search_token_value(
+                Some(login_type.as_ref()),
+                keyword.as_ref(),
+                start,
+                size,
+                sort_asc,
+            )
+            .await
+    }
+
+    /// Search account session ids (Java `StpUtil.searchSessionId`).
+    /// 搜索账号 Session id（对齐 Java `StpUtil.searchSessionId`）。
+    pub async fn search_session_id(
+        keyword: impl AsRef<str>,
+        start: i64,
+        size: i64,
+        sort_asc: bool,
+    ) -> SaTokenResult<Vec<String>> {
+        let login_type = Self::resolve_login_type();
+        Self::try_get_manager()?
+            .dao()
+            .search_session_id(
+                Some(login_type.as_ref()),
+                keyword.as_ref(),
+                start,
+                size,
+                sort_asc,
+            )
+            .await
+    }
+
+    /// Search token-session ids (Java `StpUtil.searchTokenSessionId`).
+    /// 搜索 token-session id（对齐 Java `StpUtil.searchTokenSessionId`）。
+    pub async fn search_token_session_id(
+        keyword: impl AsRef<str>,
+        start: i64,
+        size: i64,
+        sort_asc: bool,
+    ) -> SaTokenResult<Vec<String>> {
+        let login_type = Self::resolve_login_type();
+        Self::try_get_manager()?
+            .dao()
+            .search_token_session_id(
+                Some(login_type.as_ref()),
+                keyword.as_ref(),
+                start,
+                size,
+                sort_asc,
+            )
+            .await
     }
 
     // ==================== Token 相关 ====================
@@ -1609,6 +1702,7 @@ pub struct TokenBuilder {
     login_type: Option<String>,
     nonce: Option<String>,
     expire_time: Option<chrono::DateTime<chrono::Utc>>,
+    timeout_secs: Option<i64>,
 }
 
 impl std::fmt::Debug for TokenBuilder {
@@ -1627,6 +1721,7 @@ impl TokenBuilder {
             login_type: None,
             nonce: None,
             expire_time: None,
+            timeout_secs: None,
         }
     }
 
@@ -1674,7 +1769,17 @@ impl TokenBuilder {
         self.expire_at(expire_time)
     }
 
-    /// 执行登录：字段在登录前注入 LoginRequest 等价路径（login_with_options）。
+    /// Per-login TTL in seconds (Java `StpUtil.login(id, timeout)`).
+    /// 本次登录有效期（秒），对齐 Java `StpUtil.login(id, timeout)`。
+    ///
+    /// `n > 0` 存活 n 秒；`n <= 0` 永久（覆盖全局 `config.timeout`）。
+    pub fn timeout(mut self, seconds: i64) -> Self {
+        self.timeout_secs = Some(seconds);
+        self
+    }
+
+    /// 执行登录：组装 `LoginRequest`（含 timeout_secs / expire_time / device / extra / nonce / login_type），
+    /// 走 `auth_service().login`。
     ///
     /// 如果不提供 login_id 参数，则使用构建器中的 login_id。
     /// 一次性带齐可选字段，由 AuthService 阶段写入保证索引/终端/映射一致。
@@ -1684,16 +1789,26 @@ impl TokenBuilder {
             Some(id) => id.to_login_id(),
             None => self.login_id,
         };
-        manager
-            .login_with_options(
-                final_login_id,
-                self.login_type,
-                self.device,
-                self.extra_data,
-                self.nonce,
-                self.expire_time,
-            )
-            .await
+        let mut req = LoginRequest::new(final_login_id);
+        if let Some(login_type) = self.login_type {
+            req = req.login_type(login_type);
+        }
+        if let Some(device) = self.device {
+            req = req.device(device);
+        }
+        if let Some(extra_data) = self.extra_data {
+            req = req.extra_data(extra_data);
+        }
+        if let Some(nonce) = self.nonce {
+            req = req.nonce(nonce);
+        }
+        if let Some(expire_time) = self.expire_time {
+            req = req.expire_time(expire_time);
+        }
+        if let Some(timeout_secs) = self.timeout_secs {
+            req = req.timeout(timeout_secs);
+        }
+        manager.auth_service().login(req).await
     }
 }
 

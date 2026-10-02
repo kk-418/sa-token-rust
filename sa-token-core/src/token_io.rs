@@ -33,10 +33,12 @@ pub fn read_token<R: SaRequest>(req: &R, config: &SaTokenConfig) -> Option<Strin
         }
     }
 
+    let mut from_cookie = false;
     if raw.is_none() && config.is_read_cookie {
         if let Some(v) = req.get_cookie(name) {
             if !v.trim().is_empty() {
                 raw = Some(v);
+                from_cookie = true;
             }
         }
     }
@@ -52,7 +54,31 @@ pub fn read_token<R: SaRequest>(req: &R, config: &SaTokenConfig) -> Option<Strin
     }
 
     let raw = raw?;
-    apply_token_prefix(raw.trim(), config.token_prefix.as_deref())
+    let filled = if from_cookie {
+        fill_cookie_prefix(raw.trim(), config)
+    } else {
+        raw.trim().to_string()
+    };
+    apply_token_prefix(filled.trim(), config.token_prefix.as_deref())
+}
+
+/// Prepend `token_prefix` to a bare cookie token when `cookie_auto_fill_prefix` is on.
+/// `cookie_auto_fill_prefix` 开启时，给 Cookie 里的裸 token 补上 `token_prefix`。
+fn fill_cookie_prefix(raw: &str, config: &SaTokenConfig) -> String {
+    if !config.cookie_auto_fill_prefix {
+        return raw.to_string();
+    }
+    let Some(prefix) = config.token_prefix.as_deref().filter(|p| !p.is_empty()) else {
+        return raw.to_string();
+    };
+    if raw.starts_with(prefix) {
+        return raw.to_string();
+    }
+    if prefix.ends_with(' ') {
+        format!("{prefix}{raw}")
+    } else {
+        format!("{prefix} {raw}")
+    }
 }
 
 /// Apply prefix rules. `None` keeps historical Bearer stripping.
@@ -158,5 +184,113 @@ fn cookie_options(cookie: &TokenCookieConfig, max_age_secs: i64) -> CookieOption
         http_only: cookie.http_only,
         secure: cookie.secure,
         same_site: cookie.same_site.or(Some(SameSite::Lax)),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    struct MockRequest {
+        headers: HashMap<String, String>,
+        cookies: HashMap<String, String>,
+        params: HashMap<String, String>,
+    }
+
+    impl MockRequest {
+        fn with_header(name: &str, value: &str) -> Self {
+            let mut headers = HashMap::new();
+            headers.insert(name.to_string(), value.to_string());
+            Self {
+                headers,
+                cookies: HashMap::new(),
+                params: HashMap::new(),
+            }
+        }
+
+        fn with_cookie(name: &str, value: &str) -> Self {
+            let mut cookies = HashMap::new();
+            cookies.insert(name.to_string(), value.to_string());
+            Self {
+                headers: HashMap::new(),
+                cookies,
+                params: HashMap::new(),
+            }
+        }
+    }
+
+    impl SaRequest for MockRequest {
+        fn get_header(&self, name: &str) -> Option<String> {
+            self.headers.get(name).cloned()
+        }
+
+        fn get_cookie(&self, name: &str) -> Option<String> {
+            self.cookies.get(name).cloned()
+        }
+
+        fn get_param(&self, name: &str) -> Option<String> {
+            self.params.get(name).cloned()
+        }
+
+        fn get_path(&self) -> String {
+            "/".to_string()
+        }
+
+        fn get_method(&self) -> String {
+            "GET".to_string()
+        }
+    }
+
+    fn cfg(
+        token_name: &str,
+        prefix: Option<&str>,
+        cookie_auto_fill_prefix: bool,
+        is_read_header: bool,
+    ) -> SaTokenConfig {
+        SaTokenConfig {
+            token_name: token_name.to_string(),
+            token_prefix: prefix.map(str::to_string),
+            cookie_auto_fill_prefix,
+            is_read_header,
+            ..SaTokenConfig::default()
+        }
+    }
+
+    #[test]
+    fn read_token_from_authorization_bearer_header() {
+        let req = MockRequest::with_header("Authorization", "Bearer eyJabc");
+        let config = cfg("Authorization", Some("Bearer"), false, true);
+        assert_eq!(read_token(&req, &config).as_deref(), Some("eyJabc"));
+    }
+
+    #[test]
+    fn read_token_from_cookie_auto_fill_prefix() {
+        let req = MockRequest::with_cookie("sa-token", "eyJabc");
+        let config = cfg("sa-token", Some("Bearer"), true, false);
+        assert_eq!(read_token(&req, &config).as_deref(), Some("eyJabc"));
+    }
+
+    #[test]
+    fn read_token_from_cookie_without_auto_fill_returns_none() {
+        let req = MockRequest::with_cookie("sa-token", "eyJabc");
+        let config = cfg("sa-token", Some("Bearer"), false, false);
+        assert_eq!(read_token(&req, &config), None);
+    }
+
+    #[test]
+    fn read_token_from_cookie_auto_fill_prefix_with_trailing_space() {
+        let req = MockRequest::with_cookie("sa-token", "eyJabc");
+        let config = cfg("sa-token", Some("Bearer "), true, false);
+        assert_eq!(read_token(&req, &config).as_deref(), Some("eyJabc"));
+    }
+
+    #[test]
+    fn apply_token_prefix_none_strips_bearer_some_requires_prefix() {
+        assert_eq!(
+            apply_token_prefix("Bearer eyJabc", None).as_deref(),
+            Some("eyJabc")
+        );
+        assert_eq!(apply_token_prefix("eyJabc", Some("Bearer")), None);
     }
 }

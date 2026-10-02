@@ -13,7 +13,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use sa_token_adapter::serializer::SharedSerializer;
-use sa_token_adapter::storage::{SaStorage, ScanPage};
+use sa_token_adapter::storage::{SaStorage, ScanPage, scan_all_keys_dedup};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::codec::{decode_value, encode_value};
@@ -323,5 +323,241 @@ impl SaTokenDao {
             .scan(pattern, cursor, limit)
             .await
             .map_err(|e| SaTokenError::StorageError(e.to_string()))
+    }
+
+    // ---------- 会话检索 | Session search (Java StpUtil.search*) ----------
+
+    /// 扫描页大小：`limit` 仅为建议值，以 `next_cursor == 0` 结束。
+    /// Advisory scan page size; terminate on `next_cursor == 0`.
+    const SEARCH_SCAN_PAGE: usize = 256;
+
+    /// 按条件检索全部 token 值（对齐 Java `StpUtil.searchTokenValue`）。
+    ///
+    /// 返回剥离存储键前缀后的 token 字符串，可直接交给 `get_login_id`。
+    /// Search token values (Java `StpUtil.searchTokenValue`). Returns stripped
+    /// token strings, not full storage keys.
+    pub async fn search_token_value(
+        &self,
+        login_type: Option<&str>,
+        keyword: &str,
+        start: i64,
+        size: i64,
+        sort_asc: bool,
+    ) -> SaTokenResult<Vec<String>> {
+        let pattern = self.keys.token_scan_pattern(login_type);
+        self.search_stripped_ids(&pattern, keyword, start, size, sort_asc, |key| {
+            self.keys.parse_token_from_key(key, login_type)
+        })
+        .await
+    }
+
+    /// 按条件检索全部 Account-Session id（对齐 Java `StpUtil.searchSessionId`）。
+    /// Search account-session ids (Java `StpUtil.searchSessionId`).
+    pub async fn search_session_id(
+        &self,
+        login_type: Option<&str>,
+        keyword: &str,
+        start: i64,
+        size: i64,
+        sort_asc: bool,
+    ) -> SaTokenResult<Vec<String>> {
+        let pattern = self.keys.scan_pattern("session", login_type);
+        self.search_stripped_ids(&pattern, keyword, start, size, sort_asc, |key| {
+            self.keys.parse_id_from_key(key, "session", login_type)
+        })
+        .await
+    }
+
+    /// 按条件检索全部 Token-Session id（对齐 Java `StpUtil.searchTokenSessionId`）。
+    /// Search token-session ids (Java `StpUtil.searchTokenSessionId`).
+    pub async fn search_token_session_id(
+        &self,
+        login_type: Option<&str>,
+        keyword: &str,
+        start: i64,
+        size: i64,
+        sort_asc: bool,
+    ) -> SaTokenResult<Vec<String>> {
+        let pattern = self.keys.scan_pattern("token-session", login_type);
+        self.search_stripped_ids(&pattern, keyword, start, size, sort_asc, |key| {
+            self.keys
+                .parse_id_from_key(key, "token-session", login_type)
+        })
+        .await
+    }
+
+    /// 扫描 → 剥离 id → keyword 过滤 → 排序 → 分页。
+    /// Scan, strip ids, filter by keyword, sort, then paginate.
+    async fn search_stripped_ids(
+        &self,
+        pattern: &str,
+        keyword: &str,
+        start: i64,
+        size: i64,
+        sort_asc: bool,
+        parse: impl Fn(&str) -> Option<&str>,
+    ) -> SaTokenResult<Vec<String>> {
+        let keys = scan_all_keys_dedup(self.storage.as_ref(), pattern, Self::SEARCH_SCAN_PAGE)
+            .await
+            .map_err(|e| SaTokenError::StorageError(e.to_string()))?;
+
+        let mut ids: Vec<String> = keys
+            .iter()
+            .filter_map(|key| parse(key))
+            .filter(|id| keyword.is_empty() || id.contains(keyword))
+            .map(str::to_string)
+            .collect();
+
+        ids.sort();
+        if !sort_asc {
+            ids.reverse();
+        }
+
+        let start = start.max(0) as usize;
+        if start >= ids.len() {
+            return Ok(Vec::new());
+        }
+        let end = if size == -1 {
+            ids.len()
+        } else if size <= 0 {
+            start
+        } else {
+            start.saturating_add(size as usize).min(ids.len())
+        };
+        Ok(ids
+            .get(start..end)
+            .map(<[String]>::to_vec)
+            .unwrap_or_default())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sa_token_storage_memory::MemoryStorage;
+
+    fn test_dao() -> SaTokenDao {
+        SaTokenDao::new(
+            Arc::new(MemoryStorage::new()),
+            Arc::new(SaTokenConfig::default()),
+        )
+    }
+
+    async fn seed_search_keys(dao: &SaTokenDao) {
+        let keys = dao.keys();
+        dao.set_string(&keys.token_info("tok-aaa"), "u1", None)
+            .await
+            .unwrap();
+        dao.set_string(&keys.token_info("tok-bbb"), "u2", None)
+            .await
+            .unwrap();
+        dao.set_string(&keys.token_info("tok-ccc"), "u3", None)
+            .await
+            .unwrap();
+        dao.set_string(&keys.token_info("other-ddd"), "u4", None)
+            .await
+            .unwrap();
+        dao.set_string(&keys.account_session("default", "sess-aaa"), "{}", None)
+            .await
+            .unwrap();
+        dao.set_string(&keys.account_session("default", "sess-bbb"), "{}", None)
+            .await
+            .unwrap();
+        dao.set_string(&keys.account_session("default", "sess-ccc"), "{}", None)
+            .await
+            .unwrap();
+        dao.set_string(&keys.token_session("ts-aaa"), "{}", None)
+            .await
+            .unwrap();
+        dao.set_string(&keys.token_session("ts-bbb"), "{}", None)
+            .await
+            .unwrap();
+        dao.set_string(&keys.token_session("ts-ccc"), "{}", None)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn search_token_value_strips_pages_and_filters() {
+        let dao = test_dao();
+        seed_search_keys(&dao).await;
+
+        let all = dao.search_token_value(None, "", 0, -1, true).await.unwrap();
+        assert_eq!(all, vec!["other-ddd", "tok-aaa", "tok-bbb", "tok-ccc"]);
+        assert!(all.iter().all(|id| !id.contains("token:")));
+
+        let filtered = dao
+            .search_token_value(None, "tok-", 0, -1, true)
+            .await
+            .unwrap();
+        assert_eq!(filtered, vec!["tok-aaa", "tok-bbb", "tok-ccc"]);
+
+        let page = dao.search_token_value(None, "", 1, 2, true).await.unwrap();
+        assert_eq!(page, vec!["tok-aaa", "tok-bbb"]);
+
+        let desc = dao
+            .search_token_value(None, "", 0, -1, false)
+            .await
+            .unwrap();
+        assert_eq!(desc, vec!["tok-ccc", "tok-bbb", "tok-aaa", "other-ddd"]);
+
+        let from_neg = dao.search_token_value(None, "", -5, 1, true).await.unwrap();
+        assert_eq!(from_neg, vec!["other-ddd"]);
+
+        let oob = dao.search_token_value(None, "", 10, 5, true).await.unwrap();
+        assert!(oob.is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_session_id_strips_pages_and_filters() {
+        let dao = test_dao();
+        seed_search_keys(&dao).await;
+
+        let all = dao.search_session_id(None, "", 0, -1, true).await.unwrap();
+        assert_eq!(all, vec!["sess-aaa", "sess-bbb", "sess-ccc"]);
+        assert!(all.iter().all(|id| !id.contains("session:")));
+
+        let filtered = dao
+            .search_session_id(None, "bbb", 0, -1, true)
+            .await
+            .unwrap();
+        assert_eq!(filtered, vec!["sess-bbb"]);
+
+        let page = dao.search_session_id(None, "", 0, 2, true).await.unwrap();
+        assert_eq!(page, vec!["sess-aaa", "sess-bbb"]);
+
+        let desc = dao.search_session_id(None, "", 1, 2, false).await.unwrap();
+        assert_eq!(desc, vec!["sess-bbb", "sess-aaa"]);
+    }
+
+    #[tokio::test]
+    async fn search_token_session_id_strips_pages_and_filters() {
+        let dao = test_dao();
+        seed_search_keys(&dao).await;
+
+        let all = dao
+            .search_token_session_id(None, "", 0, -1, true)
+            .await
+            .unwrap();
+        assert_eq!(all, vec!["ts-aaa", "ts-bbb", "ts-ccc"]);
+        assert!(all.iter().all(|id| !id.contains("token-session:")));
+
+        let filtered = dao
+            .search_token_session_id(None, "ts-a", 0, -1, true)
+            .await
+            .unwrap();
+        assert_eq!(filtered, vec!["ts-aaa"]);
+
+        let page = dao
+            .search_token_session_id(None, "", 2, 10, true)
+            .await
+            .unwrap();
+        assert_eq!(page, vec!["ts-ccc"]);
+
+        let empty_kw_miss = dao
+            .search_token_session_id(None, "no-such", 0, -1, true)
+            .await
+            .unwrap();
+        assert!(empty_kw_miss.is_empty());
     }
 }
