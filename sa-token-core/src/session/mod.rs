@@ -6,8 +6,11 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::compat::jackson::decode_object_slot;
+
 pub mod raw;
 pub mod terminal;
+pub use crate::compat::java_session::JavaSessionExt;
 pub use raw::{RawSession, SaSessionCustom};
 pub use terminal::SaTerminalInfo;
 
@@ -57,6 +60,12 @@ pub struct SaSession {
     /// 数据存储 | Data storage
     #[serde(flatten)]
     pub data: HashMap<String, serde_json::Value>,
+
+    /// Java wire metadata (loginId / loginType / token / typed dataMap).
+    /// Skipped by native serde so snake_case JSON stays unchanged.
+    /// Java 线格式元数据；原生 serde 跳过，snake_case JSON 不变。
+    #[serde(skip)]
+    pub wire_ext: Option<Box<JavaSessionExt>>,
 }
 
 impl SaSession {
@@ -69,6 +78,7 @@ impl SaSession {
             history_terminal_count: 0,
             session_type: String::new(),
             data: HashMap::new(),
+            wire_ext: None,
         }
     }
 
@@ -94,8 +104,37 @@ impl SaSession {
         value: T,
     ) -> Result<(), serde_json::Error> {
         let json_value = serde_json::to_value(value)?;
-        self.data.insert(key.into(), json_value);
+        let key = key.into();
+        if let Some(ext) = self.wire_ext.as_mut() {
+            ext.data_map_typed.remove(&key);
+        }
+        self.data.insert(key, json_value);
         Ok(())
+    }
+
+    /// Store a Jackson-typed dataMap node and its decoded plain value.
+    /// Unmodified typed nodes are written back as-is on Jackson encode.
+    /// 写入 Jackson 类型化 dataMap 节点及其解码后的普通值；未改动的节点原样回写。
+    pub fn set_java_typed(&mut self, key: impl Into<String>, typed: serde_json::Value) {
+        let key = key.into();
+        let decoded = decode_object_slot(&typed);
+        self.java_ext_mut()
+            .data_map_typed
+            .insert(key.clone(), typed);
+        self.data.insert(key, decoded);
+    }
+
+    /// Java wire metadata, if any.
+    /// Java 线格式元数据（可能为空）。
+    pub fn java_ext(&self) -> Option<&JavaSessionExt> {
+        self.wire_ext.as_deref()
+    }
+
+    /// Mutable Java wire metadata; created on first use.
+    /// 可变 Java 线格式元数据；首次调用时创建。
+    pub fn java_ext_mut(&mut self) -> &mut JavaSessionExt {
+        self.wire_ext
+            .get_or_insert_with(|| Box::new(JavaSessionExt::default()))
     }
 
     /// 获取值 | Get Value
@@ -121,6 +160,9 @@ impl SaSession {
     /// 被删除的值，如果键不存在则返回 None
     /// Removed value, or None if key doesn't exist
     pub fn remove(&mut self, key: &str) -> Option<serde_json::Value> {
+        if let Some(ext) = self.wire_ext.as_mut() {
+            ext.data_map_typed.remove(key);
+        }
         self.data.remove(key)
     }
 
@@ -135,6 +177,9 @@ impl SaSession {
     /// 删除所有存储的数据 | Remove all stored data
     pub fn clear(&mut self) {
         self.data.clear();
+        if let Some(ext) = self.wire_ext.as_mut() {
+            ext.data_map_typed.clear();
+        }
     }
 
     /// 检查 key 是否存在 | Check if Key Exists

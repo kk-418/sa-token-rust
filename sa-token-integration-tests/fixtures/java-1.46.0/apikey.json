@@ -1,0 +1,33 @@
+{
+  "scenario" : "apikey",
+  "notes" : "ApiKeyModel jackson3 类型化 JSON；索引 raw-session dataMap __HD_API_KEY_LIST；expiresTime=-1。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001,
+    "title" : "interop",
+    "scope" : "user.read"
+  },
+  "tokens" : {
+    "apiKey" : "AK-ww2zZl3h7sbRcNis1LI4WqLsH4b1lkoUzPww"
+  },
+  "kv" : [ {
+    "key" : "satoken:apikey:AK-ww2zZl3h7sbRcNis1LI4WqLsH4b1lkoUzPww",
+    "value" : "{\"@class\":\"cn.dev33.satoken.apikey.model.ApiKeyModel\",\"apiKey\":\"AK-ww2zZl3h7sbRcNis1LI4WqLsH4b1lkoUzPww\",\"createTime\":1791000566764,\"expiresTime\":-1,\"extraData\":null,\"intro\":null,\"isValid\":true,\"loginId\":[\"java.lang.Long\",10001],\"scopes\":[\"java.util.ArrayList\",[\"user.read\"]],\"title\":\"interop\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:raw-session:apikey:10001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566766,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\",\"__HD_API_KEY_LIST\":[\"java.util.ArrayList\",[\"AK-ww2zZl3h7sbRcNis1LI4WqLsH4b1lkoUzPww\"]]},\"historyTerminalCount\":0,\"id\":\"satoken:raw-session:apikey:10001\",\"loginId\":null,\"loginType\":null,\"terminalList\":[\"java.util.Vector\",[]],\"token\":null,\"type\":\"apikey\"}",
+    "ttl" : -1
+  } ]
+}

@@ -1,0 +1,30 @@
+{
+  "scenario" : "same_token",
+  "notes" : "refreshToken 后当前 same-token + past-same-token；past TTL=Remaining（此处 timeout=-1 故均为 -1）。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : { },
+  "tokens" : {
+    "sameToken" : "hgi2k7Iv65ea0MWYnuyxpVrDIUAiVYZUSgGdc01EBcHpPfAOX7a81oCxH4V0Gv4j",
+    "pastSameToken" : "1Iqjtc2FbhSRBsok8HbhfUX44JQDo9JNNNKsMqaJz6N7V27EDJ5NvO4GTUF9Ryym"
+  },
+  "kv" : [ {
+    "key" : "satoken:var:past-same-token",
+    "value" : "1Iqjtc2FbhSRBsok8HbhfUX44JQDo9JNNNKsMqaJz6N7V27EDJ5NvO4GTUF9Ryym",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:var:same-token",
+    "value" : "hgi2k7Iv65ea0MWYnuyxpVrDIUAiVYZUSgGdc01EBcHpPfAOX7a81oCxH4V0Gv4j",
+    "ttl" : -1
+  } ]
+}

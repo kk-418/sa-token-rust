@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
-use sa_token_adapter::storage::{SaStorage, ScanPage, StorageError, StorageResult};
+use sa_token_adapter::storage::{
+    SaStorage, ScanPage, StorageError, StorageResult, TtlState, ceil_subsecond_ttl,
+};
 use tokio::sync::RwLock;
 
 /// 分片数：2 的幂，用位与代替取模。同一 key 的标量与 list 必须落在同一分片。
@@ -26,6 +28,7 @@ struct StorageItem {
 impl StorageItem {
     fn new(value: String, ttl: Option<Duration>) -> Self {
         let expire_at = ttl
+            .map(ceil_subsecond_ttl)
             .and_then(|d| chrono::Duration::from_std(d).ok())
             .map(|d| Utc::now() + d);
         Self { value, expire_at }
@@ -45,7 +48,10 @@ struct ListItem {
 
 impl ListItem {
     fn touch_ttl(&mut self, ttl: Option<Duration>) {
-        if let Some(d) = ttl.and_then(|d| chrono::Duration::from_std(d).ok()) {
+        if let Some(d) = ttl
+            .map(ceil_subsecond_ttl)
+            .and_then(|d| chrono::Duration::from_std(d).ok())
+        {
             self.expire_at = Some(Utc::now() + d);
         }
     }
@@ -141,6 +147,19 @@ impl Default for MemoryStorage {
     }
 }
 
+fn ttl_state_from_item(expired: bool, expire_at: Option<DateTime<Utc>>) -> StorageResult<TtlState> {
+    if expired {
+        return Ok(TtlState::Missing);
+    }
+    match expire_at {
+        None => Ok(TtlState::Persistent),
+        Some(exp) => {
+            let remaining = (exp - Utc::now()).to_std().unwrap_or(Duration::ZERO);
+            Ok(TtlState::Expires { remaining })
+        }
+    }
+}
+
 #[async_trait]
 impl SaStorage for MemoryStorage {
     async fn get(&self, key: &str) -> StorageResult<Option<String>> {
@@ -193,7 +212,7 @@ impl SaStorage for MemoryStorage {
 
     async fn expire(&self, key: &str, ttl: Duration) -> StorageResult<()> {
         let mut s = self.shard(key).write().await;
-        let Some(delta) = chrono::Duration::from_std(ttl).ok() else {
+        let Some(delta) = chrono::Duration::from_std(ceil_subsecond_ttl(ttl)).ok() else {
             return Ok(());
         };
         let exp = Utc::now() + delta;
@@ -222,6 +241,17 @@ impl SaStorage for MemoryStorage {
             Some(_) => Ok(Some(Duration::ZERO)),
             None => Ok(None),
         }
+    }
+
+    async fn ttl_state(&self, key: &str) -> StorageResult<TtlState> {
+        let s = self.shard(key).read().await;
+        if let Some(item) = s.scalars.get(key) {
+            return ttl_state_from_item(item.is_expired(), item.expire_at);
+        }
+        if let Some(list) = s.lists.get(key) {
+            return ttl_state_from_item(list.is_expired(), list.expire_at);
+        }
+        Ok(TtlState::Missing)
     }
 
     /// 批量读：按 key 分片取，不跨分片持锁。
@@ -599,5 +629,68 @@ mod tests {
 
         storage.set_keep_ttl("missing", "x").await.unwrap();
         assert!(!storage.exists("missing").await.unwrap());
+        assert_eq!(
+            storage.ttl_state("missing").await.unwrap(),
+            TtlState::Missing
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ttl_state_three_way() {
+        let storage = MemoryStorage::new();
+        assert_eq!(
+            storage.ttl_state("no-such").await.unwrap(),
+            TtlState::Missing
+        );
+
+        storage.set("perm", "v", None).await.unwrap();
+        assert_eq!(
+            storage.ttl_state("perm").await.unwrap(),
+            TtlState::Persistent
+        );
+        assert_eq!(storage.ttl("perm").await.unwrap(), None);
+
+        storage
+            .set("exp", "v", Some(Duration::from_secs(60)))
+            .await
+            .unwrap();
+        match storage.ttl_state("exp").await.unwrap() {
+            TtlState::Expires { remaining } => {
+                assert!(remaining > Duration::from_secs(50));
+                assert!(remaining <= Duration::from_secs(60));
+            }
+            other => panic!("expected Expires, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn test_zero_and_subsecond_ttl_not_persistent() {
+        let storage = MemoryStorage::new();
+
+        storage
+            .set("sub", "v", Some(Duration::from_millis(900)))
+            .await
+            .unwrap();
+        match storage.ttl_state("sub").await.unwrap() {
+            TtlState::Expires { remaining } => {
+                assert!(remaining > Duration::ZERO);
+                assert!(remaining <= Duration::from_secs(1));
+            }
+            other => panic!("sub-second TTL must expire, got {other:?}"),
+        }
+        assert_eq!(storage.get("sub").await.unwrap().as_deref(), Some("v"));
+
+        storage
+            .set("zero", "v", Some(Duration::ZERO))
+            .await
+            .unwrap();
+        match storage.ttl_state("zero").await.unwrap() {
+            TtlState::Expires { remaining } => {
+                assert!(remaining > Duration::ZERO);
+                assert!(remaining <= Duration::from_secs(1));
+            }
+            other => panic!("zero TTL must not be persistent, got {other:?}"),
+        }
+        assert_eq!(storage.get("zero").await.unwrap().as_deref(), Some("v"));
     }
 }

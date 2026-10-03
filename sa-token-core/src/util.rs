@@ -115,6 +115,22 @@ impl StpUtil {
         GLOBAL_MANAGER.get().ok_or(SaTokenError::NotInitialized)
     }
 
+    fn wire_default_safe_service() -> SaTokenResult<String> {
+        Ok(Self::try_get_manager()?
+            .config
+            .wire
+            .default_safe_service
+            .clone())
+    }
+
+    fn wire_default_disable_service() -> SaTokenResult<String> {
+        Ok(Self::try_get_manager()?
+            .config
+            .wire
+            .default_disable_service
+            .clone())
+    }
+
     /// 获取全局 Manager（未初始化时 panic；仅内部兼容，优先 `try_get_manager`）
     /// Get the global manager (panics if missing; prefer `try_get_manager`).
     #[track_caller]
@@ -1463,12 +1479,8 @@ impl StpUtil {
 
     /// 校验封禁（默认服务 login、最低等级）
     pub async fn check_disable(login_id: impl LoginId) -> SaTokenResult<()> {
-        Self::check_disable_level(
-            login_id,
-            crate::disable::DEFAULT_DISABLE_SERVICE,
-            crate::disable::MIN_DISABLE_LEVEL,
-        )
-        .await
+        let service = Self::wire_default_disable_service()?;
+        Self::check_disable_level(login_id, &service, crate::disable::MIN_DISABLE_LEVEL).await
     }
 
     /// 校验指定服务的封禁
@@ -1971,7 +1983,8 @@ impl StpUtil {
     /// Remaining disable seconds (`-1` permanent, `-2` not banned).
     /// 剩余封禁秒数（`-1` 永久，`-2` 未封禁）。
     pub async fn get_disable_time(login_id: impl LoginId) -> SaTokenResult<i64> {
-        Self::get_disable_time_service(login_id, crate::disable::DEFAULT_DISABLE_SERVICE).await
+        let service = Self::wire_default_disable_service()?;
+        Self::get_disable_time_service(login_id, &service).await
     }
 
     /// Remaining disable seconds for a service (`-1` / `-2` sentinels).
@@ -1989,7 +2002,8 @@ impl StpUtil {
     /// Whether the account is banned. Does not throw `AccountBanned`.
     /// 账号是否被封禁。不抛 `AccountBanned`。
     pub async fn is_disable(login_id: impl LoginId) -> SaTokenResult<bool> {
-        Self::is_disable_service(login_id, crate::disable::DEFAULT_DISABLE_SERVICE).await
+        let service = Self::wire_default_disable_service()?;
+        Self::is_disable_service(login_id, &service).await
     }
 
     /// Whether a service is banned. Does not throw `AccountBanned`.
@@ -2025,13 +2039,15 @@ impl StpUtil {
     /// Untie the default `login` service. Java `untieDisable(loginId)`.
     /// 解封默认服务 `login`。
     pub async fn untie_disable_default(login_id: impl LoginId) -> SaTokenResult<()> {
-        Self::untie_disable(login_id, crate::disable::DEFAULT_DISABLE_SERVICE).await
+        let service = Self::wire_default_disable_service()?;
+        Self::untie_disable(login_id, &service).await
     }
 
     /// Disable level of the default `login` service.
     /// 默认服务的封禁等级。
     pub async fn get_disable_level_default(login_id: impl LoginId) -> SaTokenResult<i32> {
-        Self::get_disable_level(login_id, crate::disable::DEFAULT_DISABLE_SERVICE).await
+        let service = Self::wire_default_disable_service()?;
+        Self::get_disable_level(login_id, &service).await
     }
 
     /// Remaining secondary-auth seconds of the current token.
@@ -2046,25 +2062,29 @@ impl StpUtil {
     /// Open default-service secondary auth. Java `openSafe(safeTime)`.
     /// 开启默认业务的二级认证。
     pub async fn open_safe_default(safe_time: i64) -> SaTokenResult<()> {
-        Self::open_safe(crate::safe::DEFAULT_SAFE_SERVICE, safe_time).await
+        let service = Self::wire_default_safe_service()?;
+        Self::open_safe(&service, safe_time).await
     }
 
     /// Whether default-service secondary auth is active. Java `isSafe()`.
     /// 默认业务二级认证是否有效。
     pub async fn is_safe_default() -> SaTokenResult<bool> {
-        Self::is_safe(crate::safe::DEFAULT_SAFE_SERVICE).await
+        let service = Self::wire_default_safe_service()?;
+        Self::is_safe(&service).await
     }
 
     /// Check default-service secondary auth. Java `checkSafe()`.
     /// 校验默认业务二级认证。
     pub async fn check_safe_default() -> SaTokenResult<()> {
-        Self::check_safe(crate::safe::DEFAULT_SAFE_SERVICE).await
+        let service = Self::wire_default_safe_service()?;
+        Self::check_safe(&service).await
     }
 
     /// Close default-service secondary auth. Java `closeSafe()`.
     /// 关闭默认业务二级认证。
     pub async fn close_safe_default() -> SaTokenResult<()> {
-        Self::close_safe(crate::safe::DEFAULT_SAFE_SERVICE).await
+        let service = Self::wire_default_safe_service()?;
+        Self::close_safe(&service).await
     }
 
     /// Device type of a token. Java `getLoginDeviceTypeByToken`.
@@ -2148,6 +2168,17 @@ impl StpUtil {
             .await?
             .ok_or(SaTokenError::TokenNotFound)?;
         Ok(info.last_active_time.timestamp())
+    }
+
+    /// Last-active time as unix milliseconds. Java `getTokenLastActiveTime`.
+    /// 最后活跃时间（unix 毫秒）。
+    pub async fn get_token_last_active_time_millis(token: &TokenValue) -> SaTokenResult<i64> {
+        let info = Self::try_get_manager()?
+            .token_repo()
+            .get_token_info(token.as_str())
+            .await?
+            .ok_or(SaTokenError::TokenNotFound)?;
+        Ok(info.last_active_time.timestamp_millis())
     }
 
     /// Storage TTL of token-info: `-1` permanent, `-2` missing. Java `getTokenTimeout`.

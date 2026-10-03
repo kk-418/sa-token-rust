@@ -4,6 +4,7 @@
 //! Supports multiple token styles including UUID, Random, and JWT
 //! 支持多种 Token 风格，包括 UUID、随机字符串和 JWT
 
+use crate::compat::{JwtClaimsFormat, java_jwt};
 use crate::config::{SaTokenConfig, TokenStyle};
 use crate::error::{SaTokenError, SaTokenResult};
 use crate::token::TokenValue;
@@ -13,14 +14,49 @@ use chrono::Utc;
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+/// Inputs for [`TokenGenerator::generate_for`].
+/// JWT Java claims 需要 login_type / device / timeout / extra。
+#[derive(Debug, Clone)]
+pub struct TokenGenContext {
+    /// Account id | 账号 id
+    pub login_id: String,
+    /// Stp login type | 账号体系
+    pub login_type: String,
+    /// Device type | 设备类型
+    pub device: Option<String>,
+    /// Token TTL in seconds | Token 有效期（秒）
+    pub timeout_secs: i64,
+    /// Extra claims (JWT) | 扩展 claims（JWT）
+    pub extra: Option<serde_json::Value>,
+}
+
 /// Token value generator | Token 值生成器
 pub struct TokenGenerator;
 
 impl TokenGenerator {
-    /// Generate token based on configuration | 根据配置生成 token
-    pub fn generate_with_login_id(
+    fn wrap_login_id(
         config: &SaTokenConfig,
         login_id: &str,
+        extra: Option<serde_json::Value>,
+    ) -> TokenGenContext {
+        let login_type = if config.wire.default_login_type.is_empty() {
+            "default".to_string()
+        } else {
+            config.wire.default_login_type.clone()
+        };
+        TokenGenContext {
+            login_id: login_id.to_string(),
+            login_type,
+            device: None,
+            timeout_secs: config.timeout,
+            extra,
+        }
+    }
+
+    /// Generate token from a full context | 按完整上下文生成 token
+    pub fn generate_for(
+        config: &SaTokenConfig,
+        ctx: &TokenGenContext,
     ) -> SaTokenResult<TokenValue> {
         match config.token_style {
             TokenStyle::Uuid => Ok(Self::generate_uuid()),
@@ -28,11 +64,21 @@ impl TokenGenerator {
             TokenStyle::Random32 => Self::generate_random_csprng(32),
             TokenStyle::Random64 => Self::generate_random_csprng(64),
             TokenStyle::Random128 => Self::generate_random_csprng(128),
-            TokenStyle::Jwt | TokenStyle::JwtStateless => Self::generate_jwt(config, login_id),
-            TokenStyle::Hash => Self::generate_hash(login_id),
+            TokenStyle::Jwt | TokenStyle::JwtStateless | TokenStyle::JwtMixin => {
+                Self::generate_jwt_for(config, ctx)
+            }
+            TokenStyle::Hash => Self::generate_hash(&ctx.login_id),
             TokenStyle::Timestamp => Self::generate_timestamp(),
             TokenStyle::Tik => Self::generate_tik(),
         }
+    }
+
+    /// Generate token based on configuration | 根据配置生成 token
+    pub fn generate_with_login_id(
+        config: &SaTokenConfig,
+        login_id: &str,
+    ) -> SaTokenResult<TokenValue> {
+        Self::generate_for(config, &Self::wrap_login_id(config, login_id, None))
     }
 
     /// Generate token with login_id and extra data | 根据配置生成带有额外数据的 token
@@ -42,8 +88,11 @@ impl TokenGenerator {
         extra_data: &serde_json::Value,
     ) -> SaTokenResult<TokenValue> {
         match config.token_style {
-            TokenStyle::Jwt | TokenStyle::JwtStateless => {
-                Self::generate_jwt_with_extra(config, login_id, extra_data)
+            TokenStyle::Jwt | TokenStyle::JwtStateless | TokenStyle::JwtMixin => {
+                Self::generate_for(
+                    config,
+                    &Self::wrap_login_id(config, login_id, Some(extra_data.clone())),
+                )
             }
             _ => Self::generate_with_login_id(config, login_id),
         }
@@ -78,11 +127,30 @@ impl TokenGenerator {
 
     /// Generate JWT token | 生成 JWT token
     pub fn generate_jwt(config: &SaTokenConfig, login_id: &str) -> SaTokenResult<TokenValue> {
+        Self::generate_jwt_for(config, &Self::wrap_login_id(config, login_id, None))
+    }
+
+    /// Generate JWT token with extra data signed into claims | 生成带有额外数据签名的 JWT token
+    pub fn generate_jwt_with_extra(
+        config: &SaTokenConfig,
+        login_id: &str,
+        extra_data: &serde_json::Value,
+    ) -> SaTokenResult<TokenValue> {
+        Self::generate_jwt_for(
+            config,
+            &Self::wrap_login_id(config, login_id, Some(extra_data.clone())),
+        )
+    }
+
+    fn generate_jwt_for(
+        config: &SaTokenConfig,
+        ctx: &TokenGenContext,
+    ) -> SaTokenResult<TokenValue> {
         let secret = require_jwt_secret(config)?;
-        let effective_login_id = if login_id.is_empty() {
+        let effective_login_id = if ctx.login_id.is_empty() {
             Utc::now().timestamp_millis().to_string()
         } else {
-            login_id.to_string()
+            ctx.login_id.clone()
         };
         let algorithm = config
             .jwt_algorithm
@@ -96,11 +164,31 @@ impl TokenGenerator {
         if let Some(ref audience) = config.jwt_audience {
             jwt_manager = jwt_manager.set_audience(audience);
         }
-        let mut claims = JwtClaims::new(effective_login_id);
-        if config.timeout > 0 {
-            claims.set_expiration(config.timeout);
-        }
-        match jwt_manager.generate(&claims) {
+        let token = if config.wire.jwt_claims == JwtClaimsFormat::Java {
+            let include_device_and_eff = matches!(
+                config.token_style,
+                TokenStyle::JwtMixin | TokenStyle::JwtStateless
+            );
+            let device = ctx
+                .device
+                .as_deref()
+                .or(config.wire.default_device_type.as_deref());
+            java_jwt::generate(
+                &jwt_manager,
+                &java_jwt::JavaJwtSpec {
+                    login_type: &ctx.login_type,
+                    login_id: &effective_login_id,
+                    login_id_json: config.wire.login_id_json,
+                    extra: ctx.extra.as_ref(),
+                    device,
+                    timeout_secs: ctx.timeout_secs,
+                    include_device_and_eff,
+                },
+            )
+        } else {
+            Self::generate_standard_jwt(&jwt_manager, ctx, effective_login_id)
+        };
+        match token {
             Ok(token) => Ok(TokenValue::new(token)),
             Err(e) if config.jwt_fallback_on_error => {
                 tracing::warn!(error = %e, "JWT generation failed, falling back to UUID");
@@ -112,55 +200,33 @@ impl TokenGenerator {
         }
     }
 
-    /// Generate JWT token with extra data signed into claims | 生成带有额外数据签名的 JWT token
-    pub fn generate_jwt_with_extra(
-        config: &SaTokenConfig,
-        login_id: &str,
-        extra_data: &serde_json::Value,
-    ) -> SaTokenResult<TokenValue> {
-        let secret = require_jwt_secret(config)?;
-        let effective_login_id = if login_id.is_empty() {
-            Utc::now().timestamp_millis().to_string()
-        } else {
-            login_id.to_string()
-        };
-        let algorithm = config
-            .jwt_algorithm
-            .as_ref()
-            .and_then(|alg| Self::parse_jwt_algorithm(alg))
-            .unwrap_or(JwtAlgorithm::HS256);
-        let mut jwt_manager = JwtManager::with_algorithm(secret, algorithm);
-        if let Some(ref issuer) = config.jwt_issuer {
-            jwt_manager = jwt_manager.set_issuer(issuer);
+    fn generate_standard_jwt(
+        jwt_manager: &JwtManager,
+        ctx: &TokenGenContext,
+        login_id: String,
+    ) -> SaTokenResult<String> {
+        let mut claims = JwtClaims::new(login_id);
+        if !ctx.login_type.is_empty() {
+            claims.set_login_type(&ctx.login_type);
         }
-        if let Some(ref audience) = config.jwt_audience {
-            jwt_manager = jwt_manager.set_audience(audience);
+        if ctx.timeout_secs > 0 {
+            claims.set_expiration(ctx.timeout_secs);
         }
-        let mut claims = JwtClaims::new(effective_login_id);
-        if config.timeout > 0 {
-            claims.set_expiration(config.timeout);
+        if let Some(ref device) = ctx.device {
+            claims.set_device(device);
         }
-        match extra_data {
-            serde_json::Value::Object(map) => {
+        match ctx.extra.as_ref() {
+            Some(serde_json::Value::Object(map)) => {
                 for (key, value) in map {
                     claims.add_claim(key.clone(), value.clone());
                 }
             }
-            serde_json::Value::Null => {}
-            other => {
+            Some(serde_json::Value::Null) | None => {}
+            Some(other) => {
                 claims.add_claim("extra", other.clone());
             }
         }
-        match jwt_manager.generate(&claims) {
-            Ok(token) => Ok(TokenValue::new(token)),
-            Err(e) if config.jwt_fallback_on_error => {
-                tracing::warn!(error = %e, "JWT generation with extra failed, falling back to UUID");
-                Ok(Self::generate_uuid())
-            }
-            Err(e) => Err(SaTokenError::ConfigError(format!(
-                "JWT generation failed: {e}"
-            ))),
-        }
+        jwt_manager.generate(&claims)
     }
 
     /// Generate Hash style token | 生成 Hash 风格 token

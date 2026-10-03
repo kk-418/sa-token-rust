@@ -13,9 +13,14 @@ use std::time::Duration;
 use crate::config::SaTokenConfig;
 use crate::dao::SaTokenDao;
 use crate::error::{SaTokenError, SaTokenResult};
-use crate::keys::{AccountNs, LoginId, SaKeys};
+use crate::keys::{AccountNs, LOGIN_TYPE_DEFAULT, LOGIN_TYPE_LOGIN, LoginId, SaKeyLayout, SaKeys};
 use crate::session::{SaSession, SaTerminalInfo};
 use crate::token::TokenValue;
+
+/// Java `SaSession.type` for an account session.
+const SESSION_TYPE_ACCOUNT: &str = "Account-Session";
+/// Java `SaSession.type` for a token session.
+const SESSION_TYPE_TOKEN: &str = "Token-Session";
 
 /// Session 读写与终端维护 | Session persistence and terminal bookkeeping
 pub struct SessionRepo {
@@ -41,10 +46,47 @@ impl SessionRepo {
     }
 
     /// 由 (login_type, login_id) 构造账号命名空间。
-    fn ns(login_type: &str, login_id: &str) -> SaTokenResult<AccountNs> {
-        let id =
-            LoginId::try_new(login_id).map_err(|e| SaTokenError::ConfigError(e.to_string()))?;
+    fn ns(&self, login_type: &str, login_id: &str) -> SaTokenResult<AccountNs> {
+        let id = LoginId::try_new_with(login_id, self.config.wire.allow_login_id_colon)
+            .map_err(|e| SaTokenError::ConfigError(e.to_string()))?;
         Ok(SaKeys::account_ns(login_type, &id))
+    }
+
+    /// Build an empty Account-Session (`id` = storage key, `type` = Account-Session).
+    /// 构造空 Account-Session（`id` 为存储键）。
+    pub fn new_account_session(&self, ns: &AccountNs) -> SaTokenResult<SaSession> {
+        let id = match self.config.key_layout {
+            SaKeyLayout::JavaFourSegment => self.account_session_key(ns)?,
+            SaKeyLayout::ThreeSegment => ns.as_str().to_string(),
+        };
+        let mut session = SaSession::new(id).with_type(SESSION_TYPE_ACCOUNT);
+        if let Some((login_type, login_id)) = ns.parts() {
+            let ext = session.java_ext_mut();
+            ext.login_id = Some(login_id.to_string());
+            ext.login_type = Some(
+                if login_type.is_empty()
+                    || login_type == LOGIN_TYPE_DEFAULT
+                    || login_type == LOGIN_TYPE_LOGIN
+                {
+                    self.config.wire.default_login_type.clone()
+                } else {
+                    login_type.to_string()
+                },
+            );
+        }
+        Ok(session)
+    }
+
+    /// Build an empty Token-Session (`id` = storage key on Java layout).
+    /// 构造空 Token-Session（Java 布局下 `id` 为存储键）。
+    pub fn new_token_session(&self, login_type: &str, token: &TokenValue) -> SaSession {
+        let id = match self.config.key_layout {
+            SaKeyLayout::JavaFourSegment => {
+                self.token_session_key_typed(login_type, token.as_str())
+            }
+            SaKeyLayout::ThreeSegment => format!("token-session:{}", token.as_str()),
+        };
+        SaSession::new(id).with_type(SESSION_TYPE_TOKEN)
     }
 
     /// Account-Session 存储键 | Account session storage key
@@ -60,10 +102,10 @@ impl SessionRepo {
     /// 按命名空间读取账号 Session，缺失时返回空 Session（不写入存储）。
     pub async fn get_by_ns(&self, ns: &AccountNs) -> SaTokenResult<SaSession> {
         let key = self.account_session_key(ns)?;
-        if let Some(session) = self.dao.get_object::<SaSession>(&key).await? {
+        if let Some(session) = self.dao.get_session(&key).await? {
             return Ok(session);
         }
-        Ok(SaSession::new(ns.as_str()))
+        self.new_account_session(ns)
     }
 
     /// 按 (login_type, login_id) 读取账号 Session。
@@ -72,7 +114,7 @@ impl SessionRepo {
         login_type: &str,
         login_id: &str,
     ) -> SaTokenResult<SaSession> {
-        let ns = Self::ns(login_type, login_id)?;
+        let ns = self.ns(login_type, login_id)?;
         self.get_by_ns(&ns).await
     }
 
@@ -99,9 +141,9 @@ impl SessionRepo {
     ) -> SaTokenResult<()> {
         let key = self.account_session_key(ns)?;
         if self.dao.exists(&key).await? {
-            self.dao.set_object_keep_ttl(&key, session).await
+            self.dao.update_session_keep_ttl(&key, session).await
         } else {
-            self.dao.set_object(&key, session, ttl).await
+            self.dao.set_session(&key, session, ttl).await
         }
     }
 
@@ -142,14 +184,26 @@ impl SessionRepo {
         login_id: &str,
         session: &SaSession,
     ) -> SaTokenResult<()> {
-        let ns = Self::ns(login_type, login_id)?;
+        let ns = self.ns(login_type, login_id)?;
         self.save_by_ns(&ns, session).await
     }
 
     /// 直接按 Session 自身的 id 回写（修 B1-9 的核心）。
     pub async fn save_session_object(&self, session: &SaSession) -> SaTokenResult<()> {
-        let ns = AccountNs::from_trusted(session.id.clone());
-        self.save_by_ns(&ns, session).await
+        match self.config.key_layout {
+            SaKeyLayout::JavaFourSegment => {
+                let key = &session.id;
+                if self.dao.exists(key).await? {
+                    self.dao.update_session_keep_ttl(key, session).await
+                } else {
+                    self.dao.set_session(key, session, self.session_ttl()).await
+                }
+            }
+            SaKeyLayout::ThreeSegment => {
+                let ns = AccountNs::from_trusted(session.id.clone());
+                self.save_by_ns(&ns, session).await
+            }
+        }
     }
 
     /// 按命名空间删除账号 Session | Delete an account session by namespace
@@ -164,7 +218,7 @@ impl SessionRepo {
         login_type: &str,
         login_id: &str,
     ) -> SaTokenResult<()> {
-        let ns = Self::ns(login_type, login_id)?;
+        let ns = self.ns(login_type, login_id)?;
         self.delete_by_ns(&ns).await
     }
 
@@ -189,6 +243,9 @@ impl SessionRepo {
         ttl: Option<Duration>,
     ) -> SaTokenResult<()> {
         let mut session = self.get_by_ns(ns).await?;
+        if session.get_terminal(&terminal.token_value).is_some() {
+            session.remove_terminal(&terminal.token_value);
+        }
         session.add_terminal(terminal);
         self.save_by_ns_with_ttl(ns, &session, ttl).await
     }
@@ -232,6 +289,16 @@ impl SessionRepo {
             .get_token_value_list_by_device_type(device_type))
     }
 
+    /// Latest token for an account (last terminal; optional device filter).
+    /// 账号最近一次登录的 token（终端列表末项；可按设备过滤）。
+    pub async fn latest_token(
+        &self,
+        ns: &AccountNs,
+        device_type: Option<&str>,
+    ) -> SaTokenResult<Option<String>> {
+        Ok(self.get_token_list(ns, device_type).await?.last().cloned())
+    }
+
     /// 按 token 反查单个终端 | Look up a single terminal by token
     pub async fn get_terminal(
         &self,
@@ -250,7 +317,18 @@ impl SessionRepo {
 
     /// 立即创建空的 Token-Session（`right_now_create_token_session`）。
     pub async fn create_token_session(&self, token: &TokenValue) -> SaTokenResult<()> {
-        self.create_token_session_with_ttl(token, self.token_session_ttl())
+        self.create_token_session_typed(LOGIN_TYPE_DEFAULT, token)
+            .await
+    }
+
+    /// Create an empty Token-Session under an explicit login type.
+    /// 按指定 login_type 立即创建空 Token-Session。
+    pub async fn create_token_session_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+    ) -> SaTokenResult<()> {
+        self.create_token_session_with_ttl_typed(login_type, token, self.token_session_ttl())
             .await
     }
 
@@ -261,8 +339,21 @@ impl SessionRepo {
         token: &TokenValue,
         ttl: Option<Duration>,
     ) -> SaTokenResult<()> {
-        let session = SaSession::new(format!("token-session:{}", token.as_str()));
-        self.save_token_session_with_ttl(token, &session, ttl).await
+        self.create_token_session_with_ttl_typed(LOGIN_TYPE_DEFAULT, token, ttl)
+            .await
+    }
+
+    /// Create an empty Token-Session with TTL under an explicit login type.
+    /// 按指定 login_type 立即创建空 Token-Session。
+    pub async fn create_token_session_with_ttl_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
+        let session = self.new_token_session(login_type, token);
+        self.save_token_session_with_ttl_typed(login_type, token, &session, ttl)
+            .await
     }
 
     /// 写入 Token-Session | Persist a token session
@@ -271,7 +362,19 @@ impl SessionRepo {
         token: &TokenValue,
         session: &SaSession,
     ) -> SaTokenResult<()> {
-        self.save_token_session_with_ttl(token, session, self.token_session_ttl())
+        self.save_token_session_typed(LOGIN_TYPE_DEFAULT, token, session)
+            .await
+    }
+
+    /// Persist a Token-Session under an explicit login type.
+    /// 按指定 login_type 写入 Token-Session。
+    pub async fn save_token_session_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+        session: &SaSession,
+    ) -> SaTokenResult<()> {
+        self.save_token_session_with_ttl_typed(login_type, token, session, self.token_session_ttl())
             .await
     }
 
@@ -283,30 +386,82 @@ impl SessionRepo {
         session: &SaSession,
         ttl: Option<Duration>,
     ) -> SaTokenResult<()> {
-        let key = self.dao.keys().token_session(token.as_str());
+        self.save_token_session_with_ttl_typed(LOGIN_TYPE_DEFAULT, token, session, ttl)
+            .await
+    }
+
+    /// Persist a Token-Session with TTL under an explicit login type.
+    /// 按指定 login_type 写入 Token-Session。
+    pub async fn save_token_session_with_ttl_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+        session: &SaSession,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
+        let key = self
+            .dao
+            .keys()
+            .token_session_with_type(login_type, token.as_str());
         if self.dao.exists(&key).await? {
-            self.dao.set_object_keep_ttl(&key, session).await
+            self.dao.update_session_keep_ttl(&key, session).await
         } else {
-            self.dao.set_object(&key, session, ttl).await
+            self.dao.set_session(&key, session, ttl).await
         }
     }
 
     /// 读取 Token-Session | Read a token session
     pub async fn get_token_session(&self, token: &TokenValue) -> SaTokenResult<Option<SaSession>> {
-        let key = self.dao.keys().token_session(token.as_str());
-        self.dao.get_object(&key).await
+        self.get_token_session_typed(LOGIN_TYPE_DEFAULT, token)
+            .await
+    }
+
+    /// Read a Token-Session under an explicit login type.
+    /// 按指定 login_type 读取 Token-Session。
+    pub async fn get_token_session_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+    ) -> SaTokenResult<Option<SaSession>> {
+        let key = self
+            .dao
+            .keys()
+            .token_session_with_type(login_type, token.as_str());
+        self.dao.get_session(&key).await
     }
 
     /// 删除 Token-Session | Delete a token session
     pub async fn delete_token_session(&self, token: &TokenValue) -> SaTokenResult<()> {
+        self.delete_token_session_typed(LOGIN_TYPE_DEFAULT, token)
+            .await
+    }
+
+    /// Delete a Token-Session under an explicit login type.
+    /// 按指定 login_type 删除 Token-Session。
+    pub async fn delete_token_session_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+    ) -> SaTokenResult<()> {
         self.dao
-            .delete(&self.dao.keys().token_session(token.as_str()))
+            .delete(
+                &self
+                    .dao
+                    .keys()
+                    .token_session_with_type(login_type, token.as_str()),
+            )
             .await
     }
 
     /// Token-Session 存储键（供补偿器登记删除动作）。
     pub fn token_session_key(&self, token: &str) -> String {
-        self.dao.keys().token_session(token)
+        self.token_session_key_typed(LOGIN_TYPE_DEFAULT, token)
+    }
+
+    /// Token-Session storage key under an explicit login type.
+    /// 按指定 login_type 的 Token-Session 存储键。
+    pub fn token_session_key_typed(&self, login_type: &str, token: &str) -> String {
+        self.dao.keys().token_session_with_type(login_type, token)
     }
 
     /// 配置引用（`is_logout_keep_token_session` 等判定用）。
@@ -436,6 +591,34 @@ mod tests {
         assert!(
             (3590..=3600).contains(&ttl),
             "first terminal must use login ttl, got {ttl}"
+        );
+    }
+
+    #[tokio::test]
+    async fn new_account_session_sets_type_and_id() {
+        let r = repo(10);
+        let ns = ns("u4");
+        let session = r.new_account_session(&ns).expect("new");
+        assert_eq!(session.id, "u4");
+        assert_eq!(session.session_type, "Account-Session");
+    }
+
+    #[tokio::test]
+    async fn add_terminal_dedups_by_token() {
+        let r = repo(10);
+        let ns = ns("u5");
+        r.add_terminal(&ns, SaTerminalInfo::new("tok", "PC"))
+            .await
+            .expect("add1");
+        r.add_terminal(&ns, SaTerminalInfo::new("tok", "APP"))
+            .await
+            .expect("add2");
+        let list = r.get_terminal_list(&ns, None).await.expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].device_type, "APP");
+        assert_eq!(
+            r.latest_token(&ns, None).await.unwrap().as_deref(),
+            Some("tok")
         );
     }
 }

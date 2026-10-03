@@ -1,0 +1,24 @@
+{
+  "scenario" : "jwt_stateless",
+  "notes" : "JWT Stateless：只生成 JWT，不写 DAO。claims 含 deviceType/eff=-1。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "stateless",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001,
+    "device" : "DEF"
+  },
+  "tokens" : {
+    "token" : "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOjEwMDAxLCJkZXZpY2VUeXBlIjoiREVGIiwiZWZmIjotMSwicm5TdHIiOiJMZkZVZUtVWWZQaGR1cUtRM3pQNmZNOWVBUjg2cEJWVyJ9.K_8AT11-ouT4HyTQZXY3WIqyHtzIW6Lm740dBD0c0Cw"
+  },
+  "kv" : [ ]
+}

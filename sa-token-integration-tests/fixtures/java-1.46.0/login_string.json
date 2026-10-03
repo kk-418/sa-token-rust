@@ -1,0 +1,32 @@
+{
+  "scenario" : "login_string",
+  "notes" : "StpUtil.login(\"user-a\"); token 值是纯字符串 user-a。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : "user-a",
+    "device" : "DEF"
+  },
+  "tokens" : {
+    "token" : "c40cd085-2fc3-433b-8511-9cba9e3cc9e9"
+  },
+  "kv" : [ {
+    "key" : "satoken:login:session:user-a",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566721,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\"},\"historyTerminalCount\":1,\"id\":\"satoken:login:session:user-a\",\"loginId\":\"user-a\",\"loginType\":\"login\",\"terminalList\":[\"java.util.Vector\",[{\"@class\":\"cn.dev33.satoken.session.SaTerminalInfo\",\"createTime\":1791000566721,\"deviceId\":null,\"deviceType\":\"DEF\",\"extraData\":null,\"index\":1,\"tokenValue\":\"c40cd085-2fc3-433b-8511-9cba9e3cc9e9\"}]],\"token\":null,\"type\":\"Account-Session\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:token:c40cd085-2fc3-433b-8511-9cba9e3cc9e9",
+    "value" : "user-a",
+    "ttl" : -1
+  } ]
+}

@@ -456,7 +456,19 @@ impl SaTokenManager {
 
     /// 读取并校验 token | Read and validate a token
     pub async fn get_token_info(&self, token: &TokenValue) -> SaTokenResult<TokenInfo> {
-        self.auth_service.get_token_info(token).await
+        self.get_token_info_typed(LOGIN_TYPE_DEFAULT, token).await
+    }
+
+    /// Read and validate a token under an explicit login type.
+    /// 按指定 login_type 读取并校验 token。
+    pub async fn get_token_info_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+    ) -> SaTokenResult<TokenInfo> {
+        self.auth_service
+            .get_token_info_typed(login_type, token)
+            .await
     }
 
     /// 按 login_type + login_id 读取当前映射 token
@@ -524,7 +536,13 @@ impl SaTokenManager {
 
     /// token 是否有效 | Whether the token is valid
     pub async fn is_valid(&self, token: &TokenValue) -> bool {
-        self.auth_service.is_valid(token).await
+        self.is_valid_typed(LOGIN_TYPE_DEFAULT, token).await
+    }
+
+    /// Whether the token is valid under an explicit login type.
+    /// 按指定 login_type 判断 token 是否有效。
+    pub async fn is_valid_typed(&self, login_type: &str, token: &TokenValue) -> bool {
+        self.auth_service.is_valid_typed(login_type, token).await
     }
 
     /// 续期 token 到指定秒数 | Renew a token to an explicit lifetime

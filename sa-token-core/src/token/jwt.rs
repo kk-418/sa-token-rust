@@ -331,10 +331,16 @@ impl JwtManager {
             final_claims.aud = self.audience.clone();
         }
 
-        let header = Header::new(self.algorithm.into());
-        let encoding_key = EncodingKey::from_secret(self.secret.as_bytes());
+        self.generate_payload(&final_claims)
+    }
 
-        encode(&header, &final_claims, &encoding_key)
+    /// Encode an arbitrary payload. Header always includes `"typ":"JWT"` (hutool).
+    /// 编码任意 payload。Header 始终含 `"typ":"JWT"`（对齐 hutool）。
+    pub fn generate_payload<T: Serialize>(&self, payload: &T) -> SaTokenResult<String> {
+        let mut header = Header::new(self.algorithm.into());
+        header.typ = Some("JWT".to_string());
+        let encoding_key = EncodingKey::from_secret(self.secret.as_bytes());
+        encode(&header, payload, &encoding_key)
             .map_err(|e| SaTokenError::InvalidToken(format!("Failed to generate JWT: {}", e)))
     }
 
@@ -372,6 +378,25 @@ impl JwtManager {
                 _ => SaTokenError::InvalidToken(format!("JWT validation failed: {}", e)),
             })?;
 
+        Ok(token_data.claims)
+    }
+
+    /// Verify signature only: no required spec claims, no exp/aud checks.
+    /// Used by Java claims (`eff` is checked by the caller).
+    /// 只验签：清空 required spec claims，关闭 exp/aud。Java claims 的 `eff` 由调用方校验。
+    pub fn validate_payload(&self, token: &str) -> SaTokenResult<Value> {
+        let mut validation = Validation::new(self.algorithm.into());
+        validation.required_spec_claims.clear();
+        validation.validate_exp = false;
+        validation.validate_aud = false;
+        validation.leeway = 0;
+
+        let decoding_key = DecodingKey::from_secret(self.secret.as_bytes());
+        let token_data =
+            decode::<Value>(token, &decoding_key, &validation).map_err(|e| match e.kind() {
+                jsonwebtoken::errors::ErrorKind::ExpiredSignature => SaTokenError::TokenExpired,
+                _ => SaTokenError::InvalidToken(format!("JWT validation failed: {}", e)),
+            })?;
         Ok(token_data.claims)
     }
 

@@ -1,0 +1,23 @@
+{
+  "scenario" : "logout",
+  "notes" : "logout(loginId) 删除 token 映射与 Account-Session（不再保留 -2 标记）。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001
+  },
+  "tokens" : {
+    "token" : "3812dd13-71f3-43aa-babd-13d4ea45343e"
+  },
+  "kv" : [ ]
+}

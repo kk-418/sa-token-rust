@@ -39,9 +39,43 @@
 
 use async_trait::async_trait;
 use redis::{AsyncCommands, Client, aio::ConnectionManager};
-use sa_token_adapter::storage::{SaStorage, ScanPage, StorageError, StorageResult};
+use sa_token_adapter::storage::{
+    SaStorage, ScanPage, StorageError, StorageResult, TtlState, ceil_subsecond_ttl,
+};
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
+
+/// Default list key namespace (`{key_prefix}list:{key}`). Java shared Redis typically uses `""`.
+pub const DEFAULT_LIST_NAMESPACE: &str = "list:";
+
+/// Redis EX seconds; never 0 (`SETEX 0` is invalid).
+fn ttl_ex_secs(ttl: Duration) -> u64 {
+    ceil_subsecond_ttl(ttl).as_secs()
+}
+
+fn compose_full_key(key_prefix: &str, key: &str) -> String {
+    format!("{key_prefix}{key}")
+}
+
+fn compose_list_key(key_prefix: &str, list_namespace: &str, key: &str) -> String {
+    format!("{key_prefix}{list_namespace}{key}")
+}
+
+/// Prefix used to exclude list keys from SCAN. Empty namespace → do not exclude.
+fn list_scan_exclude_prefix(key_prefix: &str, list_namespace: &str) -> Option<String> {
+    if list_namespace.is_empty() {
+        None
+    } else {
+        Some(format!("{key_prefix}{list_namespace}"))
+    }
+}
+
+/// `SET key value KEEPTTL XX` (Redis 6+). Missing key returns nil.
+fn set_keep_ttl_cmd(key: &str, value: &str) -> redis::Cmd {
+    let mut cmd = redis::cmd("SET");
+    cmd.arg(key).arg(value).arg("KEEPTTL").arg("XX");
+    cmd
+}
 
 /// Redis 配置
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -114,12 +148,14 @@ fn default_pool_size() -> u32 {
 pub struct RedisStorage {
     client: ConnectionManager,
     key_prefix: String,
+    list_namespace: String,
 }
 
 impl std::fmt::Debug for RedisStorage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RedisStorage")
             .field("key_prefix", &self.key_prefix)
+            .field("list_namespace", &self.list_namespace)
             .finish_non_exhaustive()
     }
 }
@@ -129,7 +165,8 @@ impl RedisStorage {
     ///
     /// # 参数
     /// * `redis_url` - Redis 连接 URL
-    /// * `key_prefix` - 键前缀（例如：`sa-token:`）
+    /// * `key_prefix` - 物理键前缀（例如：`sa-token:`）。
+    ///   与 Java Sa-Token 共享 Redis 时必须为 `""`（逻辑键由 `SaKeys` 提供）。
     ///
     /// # URL 格式
     /// - 无密码：`redis://localhost:6379/0`
@@ -160,6 +197,7 @@ impl RedisStorage {
         Ok(Self {
             client: connection_manager,
             key_prefix: key_prefix.into(),
+            list_namespace: DEFAULT_LIST_NAMESPACE.to_string(),
         })
     }
 
@@ -167,7 +205,7 @@ impl RedisStorage {
     ///
     /// # 参数
     /// * `config` - Redis 配置
-    /// * `key_prefix` - 键前缀（例如：`sa-token:`）
+    /// * `key_prefix` - 物理键前缀（例如：`sa-token:`）。Java 互通时传 `""`。
     ///
     /// # 示例
     /// ```rust,ignore
@@ -205,6 +243,13 @@ impl RedisStorage {
     ///     .key_prefix("sa-token:")
     ///     .build()
     ///     .await?;
+    ///
+    /// // 与 Java Sa-Token 共享 Redis：物理前缀与 list 命名空间均为空
+    /// let storage = RedisStorage::builder()
+    ///     .host("localhost")
+    ///     .java_shared()
+    ///     .build()
+    ///     .await?;
     /// ```
     pub fn builder() -> RedisStorageBuilder {
         RedisStorageBuilder::default()
@@ -212,12 +257,12 @@ impl RedisStorage {
 
     /// 获取完整的键名（带前缀）
     fn full_key(&self, key: &str) -> String {
-        format!("{}{}", self.key_prefix, key)
+        compose_full_key(&self.key_prefix, key)
     }
 
-    /// 列表键使用独立前缀，避免与字符串键类型冲突
+    /// 列表键：`{key_prefix}{list_namespace}{key}`。默认 namespace 为 `list:`。
     fn list_key(&self, key: &str) -> String {
-        format!("{}list:{}", self.key_prefix, key)
+        compose_list_key(&self.key_prefix, &self.list_namespace, key)
     }
 
     /// 将物理键剥离为逻辑键；前缀不匹配时返回 `None`
@@ -236,12 +281,14 @@ impl RedisStorage {
 pub struct RedisStorageBuilder {
     config: RedisConfig,
     key_prefix: Option<String>,
+    list_namespace: Option<String>,
 }
 
 impl std::fmt::Debug for RedisStorageBuilder {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("RedisStorageBuilder")
             .field("key_prefix", &self.key_prefix)
+            .field("list_namespace", &self.list_namespace)
             .finish_non_exhaustive()
     }
 }
@@ -277,16 +324,34 @@ impl RedisStorageBuilder {
         self
     }
 
-    /// 设置键前缀
+    /// 设置物理键前缀。与 Java Sa-Token 共享 Redis 时传 `""`。
     pub fn key_prefix(mut self, prefix: impl Into<String>) -> Self {
         self.key_prefix = Some(prefix.into());
         self
     }
 
+    /// 设置 list 键命名空间。默认 `"list:"`（物理键 `{prefix}list:{key}`）。
+    ///
+    /// Java 模式 list 与标量共用逻辑键，传 `""`。
+    pub fn list_namespace(mut self, ns: impl Into<String>) -> Self {
+        self.list_namespace = Some(ns.into());
+        self
+    }
+
+    /// Java 共享 Redis 约定：`key_prefix=""`，且 list 不使用 Rust 的 `list:` 前缀。
+    pub fn java_shared(self) -> Self {
+        self.key_prefix("").list_namespace("")
+    }
+
     /// 构建 RedisStorage（未设置 `key_prefix` 时默认为空字符串）
     pub async fn build(self) -> StorageResult<RedisStorage> {
         let key_prefix = self.key_prefix.unwrap_or_default();
-        RedisStorage::from_config(self.config, key_prefix).await
+        let list_namespace = self
+            .list_namespace
+            .unwrap_or_else(|| DEFAULT_LIST_NAMESPACE.to_string());
+        let mut storage = RedisStorage::from_config(self.config, key_prefix).await?;
+        storage.list_namespace = list_namespace;
+        Ok(storage)
     }
 }
 
@@ -306,7 +371,7 @@ impl SaStorage for RedisStorage {
         let full_key = self.full_key(key);
 
         if let Some(ttl) = ttl {
-            conn.set_ex(&full_key, value, ttl.as_secs())
+            conn.set_ex(&full_key, value, ttl_ex_secs(ttl))
                 .await
                 .map_err(|e| StorageError::OperationFailed(e.to_string()))
         } else {
@@ -319,18 +384,9 @@ impl SaStorage for RedisStorage {
     async fn set_keep_ttl(&self, key: &str, value: &str) -> StorageResult<()> {
         let mut conn = self.client.clone();
         let full_key = self.full_key(key);
-        let exists: bool = conn
-            .exists(&full_key)
-            .await
-            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
-        if !exists {
-            return Ok(());
-        }
-        redis::cmd("SET")
-            .arg(&full_key)
-            .arg(value)
-            .arg("KEEPTTL")
-            .query_async::<()>(&mut conn)
+        // Atomic SET KEEPTTL XX (Redis 6+). Nil (key missing) is a successful no-op.
+        let _: redis::Value = set_keep_ttl_cmd(&full_key, value)
+            .query_async(&mut conn)
             .await
             .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
         Ok(())
@@ -358,7 +414,7 @@ impl SaStorage for RedisStorage {
         let mut conn = self.client.clone();
         let full_key = self.full_key(key);
 
-        conn.expire(&full_key, ttl.as_secs() as i64)
+        conn.expire(&full_key, ttl_ex_secs(ttl) as i64)
             .await
             .map_err(|e| StorageError::OperationFailed(e.to_string()))
     }
@@ -377,6 +433,25 @@ impl SaStorage for RedisStorage {
             -1 => Ok(None), // 永不过期
             secs if secs > 0 => Ok(Some(Duration::from_secs(secs as u64))),
             _ => Ok(Some(Duration::from_secs(0))),
+        }
+    }
+
+    async fn ttl_state(&self, key: &str) -> StorageResult<TtlState> {
+        let mut conn = self.client.clone();
+        let full_key = self.full_key(key);
+        let ttl_secs: i64 = conn
+            .ttl(&full_key)
+            .await
+            .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
+        match ttl_secs {
+            -2 => Ok(TtlState::Missing),
+            -1 => Ok(TtlState::Persistent),
+            secs if secs >= 0 => Ok(TtlState::Expires {
+                remaining: Duration::from_secs(secs as u64),
+            }),
+            other => Err(StorageError::OperationFailed(format!(
+                "unexpected Redis TTL {other}"
+            ))),
         }
     }
 
@@ -400,7 +475,7 @@ impl SaStorage for RedisStorage {
         let mut pipe = redis::pipe();
         for (key, value) in &full_items {
             if let Some(ttl) = ttl {
-                pipe.set_ex(key, *value, ttl.as_secs());
+                pipe.set_ex(key, *value, ttl_ex_secs(ttl));
             } else {
                 pipe.set(key, *value);
             }
@@ -484,7 +559,7 @@ impl SaStorage for RedisStorage {
                 .arg(value)
                 .arg("NX")
                 .arg("EX")
-                .arg(ttl.as_secs())
+                .arg(ttl_ex_secs(ttl))
                 .query_async(&mut conn)
                 .await
                 .map_err(|e| StorageError::OperationFailed(e.to_string()))?
@@ -520,7 +595,7 @@ impl SaStorage for RedisStorage {
         let mut conn = self.client.clone();
         let full_key = self.full_key(key);
         let expected_str = expected.unwrap_or("");
-        let ttl_secs = ttl.map(|d| d.as_secs()).unwrap_or(0);
+        let ttl_secs = ttl.map(ttl_ex_secs).unwrap_or(0);
 
         // Lua 保证 GET + 比较 + SET 单键原子，避免 WATCH 竞态。
         // expected=None 时 ARGV[1] 为空串：键不存在（GET 返回 false）视为匹配。
@@ -580,7 +655,7 @@ impl SaStorage for RedisStorage {
         // 【A1-2】Lua 原子去重：LRANGE + 判断 + RPUSH + EXPIRE 在同一脚本内完成
         let mut conn = self.client.clone();
         let list_key = self.list_key(key);
-        let ttl_secs = ttl.map(|d| d.as_secs()).unwrap_or(0);
+        let ttl_secs = ttl.map(ttl_ex_secs).unwrap_or(0);
 
         let script = r#"
             local list_key = KEYS[1]
@@ -678,10 +753,10 @@ impl SaStorage for RedisStorage {
             .await
             .map_err(|e| StorageError::OperationFailed(e.to_string()))?;
 
-        let list_prefix = format!("{}list:", self.key_prefix);
+        let list_exclude = list_scan_exclude_prefix(&self.key_prefix, &self.list_namespace);
         let keys: Vec<String> = raw_keys
             .into_iter()
-            .filter(|k| !k.starts_with(&list_prefix))
+            .filter(|k| list_exclude.as_ref().is_none_or(|p| !k.starts_with(p)))
             .filter_map(|k| self.strip_prefix(&k).map(str::to_string))
             .collect();
 
@@ -711,6 +786,62 @@ mod tests {
         assert_eq!(logical, vec!["sa:token:a", "sa:token:b"]);
     }
 
+    #[test]
+    fn subsecond_ttl_never_becomes_zero_ex() {
+        assert_eq!(ttl_ex_secs(Duration::from_millis(1)), 1);
+        assert_eq!(ttl_ex_secs(Duration::from_millis(900)), 1);
+        assert_eq!(ttl_ex_secs(Duration::ZERO), 1);
+        assert_eq!(ttl_ex_secs(Duration::from_secs(30)), 30);
+        assert_eq!(ttl_ex_secs(Duration::from_millis(1500)), 1);
+    }
+
+    #[test]
+    fn list_key_default_and_empty_namespace() {
+        assert_eq!(
+            compose_list_key("sa-token:", "list:", "idx"),
+            "sa-token:list:idx"
+        );
+        assert_eq!(compose_list_key("", "list:", "idx"), "list:idx");
+        assert_eq!(
+            compose_list_key("", "", "satoken:login:token:x"),
+            "satoken:login:token:x"
+        );
+        assert_eq!(compose_list_key("p:", "", "k"), "p:k");
+        assert_eq!(compose_full_key("sa-token:", "k"), "sa-token:k");
+        assert_eq!(compose_full_key("", "k"), "k");
+    }
+
+    #[test]
+    fn list_scan_exclude_empty_namespace_is_none() {
+        assert_eq!(
+            list_scan_exclude_prefix("sa-token:", "list:").as_deref(),
+            Some("sa-token:list:")
+        );
+        assert_eq!(
+            list_scan_exclude_prefix("", "list:").as_deref(),
+            Some("list:")
+        );
+        assert_eq!(list_scan_exclude_prefix("", ""), None);
+        assert_eq!(list_scan_exclude_prefix("p:", ""), None);
+    }
+
+    #[test]
+    fn java_shared_clears_prefix_and_list_namespace() {
+        let b = RedisStorageBuilder::default().java_shared();
+        assert_eq!(b.key_prefix.as_deref(), Some(""));
+        assert_eq!(b.list_namespace.as_deref(), Some(""));
+    }
+
+    #[test]
+    fn set_keep_ttl_command_uses_keepttl_xx() {
+        let packed = set_keep_ttl_cmd("k", "v").get_packed_command();
+        let s = String::from_utf8_lossy(&packed);
+        assert!(s.contains("SET"), "{s:?}");
+        assert!(s.contains("KEEPTTL"), "{s:?}");
+        assert!(s.contains("XX"), "{s:?}");
+        assert!(!s.contains("EXISTS"), "{s:?}");
+    }
+
     /// 真实 Redis：无 REDIS_URL 时 ignore；测 set/get/ttl/get_del。
     #[tokio::test]
     #[ignore = "requires REDIS_URL"]
@@ -738,5 +869,65 @@ mod tests {
         let taken = storage.get_del(&key).await.expect("get_del");
         assert_eq!(taken.as_deref(), Some("v1"));
         assert!(storage.get(&key).await.expect("gone").is_none());
+    }
+
+    /// 真实 Redis：set_keep_ttl 原子 XX、ttl_state 三态、不足 1s 的 TTL 不 SETEX 0。
+    #[tokio::test]
+    #[ignore = "requires REDIS_URL"]
+    async fn test_redis_set_keep_ttl_and_ttl_state() {
+        let url = std::env::var("REDIS_URL").expect("REDIS_URL");
+        let storage = RedisStorage::connect(&url).await.expect("connect");
+        let key = format!(
+            "sa:test:keep:{}_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
+            std::process::id()
+        );
+        storage.set_keep_ttl(&key, "x").await.expect("keep missing");
+        assert_eq!(
+            storage.ttl_state(&key).await.expect("state"),
+            TtlState::Missing
+        );
+
+        storage.set(&key, "v1", None).await.expect("set perm");
+        assert_eq!(
+            storage.ttl_state(&key).await.expect("state"),
+            TtlState::Persistent
+        );
+        storage.set_keep_ttl(&key, "v2").await.expect("keep perm");
+        assert_eq!(storage.get(&key).await.expect("get").as_deref(), Some("v2"));
+        assert_eq!(
+            storage.ttl_state(&key).await.expect("state"),
+            TtlState::Persistent
+        );
+
+        storage
+            .set(&key, "v3", Some(Duration::from_secs(30)))
+            .await
+            .expect("set exp");
+        match storage.ttl_state(&key).await.expect("state") {
+            TtlState::Expires { remaining } => {
+                assert!(remaining.as_secs() > 0 && remaining.as_secs() <= 30);
+            }
+            other => panic!("expected Expires, got {other:?}"),
+        }
+        storage.set_keep_ttl(&key, "v4").await.expect("keep exp");
+        assert_eq!(storage.get(&key).await.expect("get").as_deref(), Some("v4"));
+        match storage.ttl_state(&key).await.expect("state") {
+            TtlState::Expires { remaining } => {
+                assert!(remaining.as_secs() <= 30);
+            }
+            other => panic!("expected Expires, got {other:?}"),
+        }
+
+        storage
+            .set(&key, "sub", Some(Duration::from_millis(900)))
+            .await
+            .expect("subsecond set must not SETEX 0");
+        assert!(storage.exists(&key).await.expect("exists"));
+
+        let _ = storage.delete(&key).await;
     }
 }

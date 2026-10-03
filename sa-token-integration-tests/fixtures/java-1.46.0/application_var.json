@@ -1,0 +1,34 @@
+{
+  "scenario" : "application_var",
+  "notes" : "SaHolder.getApplication().set → satoken:var:{k}，objectToJson。Map 走 mapObjectMapper。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "foo" : "bar",
+    "num" : 10001
+  },
+  "tokens" : { },
+  "kv" : [ {
+    "key" : "satoken:var:foo",
+    "value" : "\"bar\"",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:var:map",
+    "value" : "{\"k\":\"v\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:var:num",
+    "value" : "10001",
+    "ttl" : -1
+  } ]
+}

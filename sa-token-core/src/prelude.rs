@@ -12,7 +12,7 @@ pub use crate::{
     SaTokenEventType, SaTokenListener, SaTokenManager, SaTokenResult, SaTotpTemplate,
     ServiceCredential, SloNotifier, SsoClient, SsoConfig, SsoManager, SsoServer, SsoSession,
     SsoTicket, SsoTicketStore, StoredOnlineUser, StpUtil, TempTokenManager, TempTokenRecord,
-    TicketChecker, TokenBuilder, TokenInfo, TokenIssueRequest, TokenValue, WsAuthInfo,
+    TicketChecker, TokenBuilder, TokenInfo, TokenIssueRequest, TokenValue, WireConfig, WsAuthInfo,
     WsAuthManager, WsTokenExtractor,
     config::TokenStyle,
     context::RequestAuthMeta,

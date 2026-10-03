@@ -1,0 +1,38 @@
+{
+  "scenario" : "multi_device",
+  "notes" : "同一 loginId 两设备 PC/APP；Account-Session.terminalList 两条。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001,
+    "device1" : "PC",
+    "device2" : "APP"
+  },
+  "tokens" : {
+    "token" : "d3f2b66f-1b3c-4ec2-a4f1-88729805686a",
+    "token2" : "86462af3-c06c-4878-aaef-46a6c0731d22"
+  },
+  "kv" : [ {
+    "key" : "satoken:login:session:10001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566722,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\"},\"historyTerminalCount\":2,\"id\":\"satoken:login:session:10001\",\"loginId\":[\"java.lang.Long\",10001],\"loginType\":\"login\",\"terminalList\":[\"java.util.Vector\",[{\"@class\":\"cn.dev33.satoken.session.SaTerminalInfo\",\"createTime\":1791000566722,\"deviceId\":null,\"deviceType\":\"PC\",\"extraData\":null,\"index\":1,\"tokenValue\":\"d3f2b66f-1b3c-4ec2-a4f1-88729805686a\"},{\"@class\":\"cn.dev33.satoken.session.SaTerminalInfo\",\"createTime\":1791000566748,\"deviceId\":null,\"deviceType\":\"APP\",\"extraData\":null,\"index\":2,\"tokenValue\":\"86462af3-c06c-4878-aaef-46a6c0731d22\"}]],\"token\":null,\"type\":\"Account-Session\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:token:86462af3-c06c-4878-aaef-46a6c0731d22",
+    "value" : "10001",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:token:d3f2b66f-1b3c-4ec2-a4f1-88729805686a",
+    "value" : "10001",
+    "ttl" : -1
+  } ]
+}

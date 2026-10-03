@@ -8,13 +8,14 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use sa_token_adapter::storage::SaStorage;
 use serde::{Deserialize, Serialize};
 
-use crate::config::SaTokenConfig;
+use crate::compat::ApiKeyFormat;
+use crate::compat::java_api_key::{decode_api_key, encode_api_key};
 use crate::context::{RequestAuthMeta, SaTokenContext};
+use crate::dao::SaTokenDao;
 use crate::error::{SaTokenError, SaTokenResult};
-use crate::manager::SaTokenManager;
+use crate::session::SaSession;
 
 /// Default namespace (Java `SaApiKeyTemplate.DEFAULT_NAMESPACE`).
 /// 默认命名空间。
@@ -35,6 +36,10 @@ const NEVER_EXPIRE: i64 = -1;
 /// Already-expired sentinel returned by `expires_in` (Java `-2`).
 /// `expires_in` 在已过期时返回的标记。
 const VALUE_EXPIRED: i64 = -2;
+
+/// Java raw-session dataMap key for the loginId→apiKey list.
+/// Java raw-session dataMap 中 loginId→apiKey 列表的键。
+const API_KEY_LIST: &str = "__HD_API_KEY_LIST";
 
 /// Random suffix length after `prefix` (Java `SaFoxUtil.getRandomString(36)`).
 /// 前缀之后的随机段长度。
@@ -57,10 +62,6 @@ fn random_suffix() -> String {
             a.chars().chain(b.chars()).take(RANDOM_SUFFIX_LEN).collect()
         }
     }
-}
-
-fn storage_err(err: impl std::fmt::Display) -> SaTokenError {
-    SaTokenError::StorageError(err.to_string())
 }
 
 /// API Key model (Java `ApiKeyModel`).
@@ -175,12 +176,11 @@ impl ApiKeyModel {
     }
 }
 
-/// API Key operations bound to a manager's storage + config.
-/// 绑定 Manager 存储与配置的 API Key 操作。
+/// API Key operations bound to a Dao.
+/// 绑定 Dao 的 API Key 操作。
 #[derive(Clone)]
 pub struct ApiKeyManager {
-    storage: Arc<dyn SaStorage>,
-    config: Arc<SaTokenConfig>,
+    dao: Arc<SaTokenDao>,
     namespace: String,
     prefix: String,
     timeout: i64,
@@ -197,31 +197,40 @@ impl std::fmt::Debug for ApiKeyManager {
 }
 
 impl ApiKeyManager {
-    /// Bind to an existing `SaTokenManager` (default namespace / prefix / timeout).
-    /// 绑定已有 Manager，命名空间 / 前缀 / 超时使用默认值。
-    pub fn new(manager: &SaTokenManager) -> Self {
+    /// Bind to an existing Dao (namespace from `wire.api_key_namespace`).
+    /// 绑定已有 Dao，命名空间取 `wire.api_key_namespace`。
+    pub fn new(dao: Arc<SaTokenDao>) -> Self {
+        let namespace = dao.config().wire.api_key_namespace.clone();
         Self {
-            storage: Arc::clone(manager.storage()),
-            config: Arc::clone(&manager.config),
-            namespace: DEFAULT_NAMESPACE.to_string(),
+            dao,
+            namespace,
             prefix: DEFAULT_PREFIX.to_string(),
             timeout: DEFAULT_TIMEOUT,
         }
     }
 
-    /// Storage key for a model: `{token_name}:{namespace}:{apiKey}`.
-    /// 模型存储键。
-    pub fn save_key(&self, api_key: &str) -> String {
-        format!("{}:{}:{}", self.config.token_name, self.namespace, api_key)
+    fn is_java(&self) -> bool {
+        self.dao.config().wire.api_key_format == ApiKeyFormat::JavaModel
     }
 
-    /// Storage key for the login-id index: `{token_name}:{namespace}:index:{loginId}`.
+    /// Storage key for a model (`keys().api_key`).
+    /// 模型存储键。
+    pub fn save_key(&self, api_key: &str) -> String {
+        self.dao.keys().api_key(&self.namespace, api_key)
+    }
+
+    /// Storage key for the login-id index.
+    ///
+    /// Native: `{root}{ns}:index:{loginId}`. Java: raw-session `{tn}:raw-session:{ns}:{loginId}`.
     /// loginId 索引存储键。
     pub fn index_key(&self, login_id: &str) -> String {
-        format!(
-            "{}:{}:index:{}",
-            self.config.token_name, self.namespace, login_id
-        )
+        if self.is_java() {
+            self.dao.keys().raw_session(&self.namespace, login_id)
+        } else {
+            self.dao
+                .keys()
+                .api_key(&self.namespace, &format!("index:{login_id}"))
+        }
     }
 
     /// Build a model; does **not** persist (Java `createApiKeyModel(loginId)`).
@@ -254,7 +263,7 @@ impl ApiKeyManager {
         model.check_can_save()?;
         let key = self.save_key(&model.api_key);
         if model.time_expired() {
-            self.storage.delete(&key).await.map_err(storage_err)?;
+            self.dao.delete(&key).await?;
             let list = self.load_index(&model.login_id).await?;
             return self.persist_index(&model.login_id, list).await;
         }
@@ -263,11 +272,8 @@ impl ApiKeyManager {
             secs if secs > 0 => Some(Duration::from_secs(secs as u64)),
             _ => None,
         };
-        let raw = self.config.encode(model)?;
-        self.storage
-            .set(&key, &raw, ttl)
-            .await
-            .map_err(storage_err)?;
+        let raw = self.encode_model(model)?;
+        self.dao.set_string(&key, &raw, ttl).await?;
         let mut list = self.load_index(&model.login_id).await?;
         if !list.iter().any(|k| k == &model.api_key) {
             list.push(model.api_key.clone());
@@ -282,8 +288,8 @@ impl ApiKeyManager {
             return Ok(None);
         }
         let key = self.save_key(api_key);
-        match self.storage.get(&key).await.map_err(storage_err)? {
-            Some(raw) if !raw.is_empty() => Ok(Some(self.config.decode(&raw)?)),
+        match self.dao.get_string(&key).await? {
+            Some(raw) if !raw.is_empty() => Ok(Some(self.decode_model(&raw)?)),
             _ => Ok(None),
         }
     }
@@ -309,10 +315,7 @@ impl ApiKeyManager {
         let Some(ak) = self.get(api_key).await? else {
             return Ok(());
         };
-        self.storage
-            .delete(&self.save_key(api_key))
-            .await
-            .map_err(storage_err)?;
+        self.dao.delete(&self.save_key(api_key)).await?;
         let list = self.load_index(&ak.login_id).await?;
         self.persist_index(&ak.login_id, list).await
     }
@@ -322,16 +325,9 @@ impl ApiKeyManager {
     pub async fn delete_by_login_id(&self, login_id: &str) -> SaTokenResult<()> {
         let list = self.load_index(login_id).await?;
         for api_key in &list {
-            self.storage
-                .delete(&self.save_key(api_key))
-                .await
-                .map_err(storage_err)?;
+            self.dao.delete(&self.save_key(api_key)).await?;
         }
-        self.storage
-            .delete(&self.index_key(login_id))
-            .await
-            .map_err(storage_err)?;
-        Ok(())
+        self.dao.delete(&self.index_key(login_id)).await
     }
 
     /// List non-expired keys for a login id (Java `getApiKeyList`).
@@ -458,12 +454,38 @@ impl ApiKeyManager {
         Ok(self.current_api_key().await?.login_id)
     }
 
+    fn encode_model(&self, model: &ApiKeyModel) -> SaTokenResult<String> {
+        if self.is_java() {
+            encode_api_key(model, self.dao.config().wire.login_id_json)
+        } else {
+            self.dao.encode(model)
+        }
+    }
+
+    fn decode_model(&self, raw: &str) -> SaTokenResult<ApiKeyModel> {
+        if self.is_java() {
+            decode_api_key(raw)
+        } else {
+            self.dao.decode(raw)
+        }
+    }
+
     async fn load_index(&self, login_id: &str) -> SaTokenResult<Vec<String>> {
-        let key = self.index_key(login_id);
-        match self.storage.get(&key).await.map_err(storage_err)? {
-            Some(raw) if !raw.is_empty() => self.config.decode(&raw),
+        if self.is_java() {
+            return self.load_java_index(login_id).await;
+        }
+        match self.dao.get_string(&self.index_key(login_id)).await? {
+            Some(raw) if !raw.is_empty() => self.dao.decode(&raw),
             _ => Ok(Vec::new()),
         }
+    }
+
+    async fn load_java_index(&self, login_id: &str) -> SaTokenResult<Vec<String>> {
+        let key = self.dao.keys().raw_session(&self.namespace, login_id);
+        let Some(session) = self.dao.get_session(&key).await? else {
+            return Ok(Vec::new());
+        };
+        Ok(api_key_list_from_session(&session))
     }
 
     /// Drop missing/expired keys, then rewrite the index with max remaining TTL.
@@ -486,10 +508,6 @@ impl ApiKeyManager {
             }
             kept.push(api_key);
         }
-        let key = self.index_key(login_id);
-        if kept.is_empty() {
-            return self.storage.delete(&key).await.map_err(storage_err);
-        }
         let ttl = if never {
             None
         } else if max_ttl > 0 {
@@ -497,20 +515,66 @@ impl ApiKeyManager {
         } else {
             None
         };
-        let raw = self.config.encode(&kept)?;
-        self.storage.set(&key, &raw, ttl).await.map_err(storage_err)
+        if self.is_java() {
+            return self.persist_java_index(login_id, kept, ttl).await;
+        }
+        let key = self.index_key(login_id);
+        if kept.is_empty() {
+            return self.dao.delete(&key).await;
+        }
+        let raw = self.dao.encode(&kept)?;
+        self.dao.set_string(&key, &raw, ttl).await
+    }
+
+    async fn persist_java_index(
+        &self,
+        login_id: &str,
+        kept: Vec<String>,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
+        let key = self.dao.keys().raw_session(&self.namespace, login_id);
+        if kept.is_empty() {
+            return self.dao.delete(&key).await;
+        }
+        let mut session = match self.dao.get_session(&key).await? {
+            Some(s) => s,
+            None => SaSession::new(&key).with_type(self.namespace.as_str()),
+        };
+        session.set(API_KEY_LIST, &kept)?;
+        self.dao.set_session(&key, &session, ttl).await
+    }
+}
+
+fn api_key_list_from_session(session: &SaSession) -> Vec<String> {
+    match session.data.get(API_KEY_LIST) {
+        Some(serde_json::Value::Array(a)) => a
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_owned))
+            .collect(),
+        _ => Vec::new(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::compat::jackson::{CLASS_API_KEY, CLASS_ARRAY_LIST, CLASS_LONG};
+    use crate::config::SaTokenConfig;
+    use crate::manager::SaTokenManager;
     use sa_token_storage_memory::MemoryStorage;
+    use serde_json::{Value, json};
 
     fn test_manager() -> (SaTokenManager, ApiKeyManager) {
         let storage = Arc::new(MemoryStorage::new());
         let mgr = SaTokenManager::new(storage, SaTokenConfig::default());
-        let api = ApiKeyManager::new(&mgr);
+        let api = ApiKeyManager::new(mgr.dao().clone());
+        (mgr, api)
+    }
+
+    fn java_manager() -> (SaTokenManager, ApiKeyManager) {
+        let storage = Arc::new(MemoryStorage::new());
+        let mgr = SaTokenManager::new(storage, SaTokenConfig::java_compatible());
+        let api = ApiKeyManager::new(mgr.dao().clone());
         (mgr, api)
     }
 
@@ -586,5 +650,84 @@ mod tests {
             model.check_can_save(),
             Err(SaTokenError::ApiKeyInvalid)
         ));
+    }
+
+    #[tokio::test]
+    async fn native_save_key_uses_keys_api() {
+        let (mgr, api) = test_manager();
+        let model = api.create("u-key");
+        api.save(&model).await.expect("save");
+        let key = api.save_key(&model.api_key);
+        assert_eq!(key, mgr.keys().api_key("apikey", &model.api_key));
+        assert!(key.starts_with("sa:apikey:"));
+        let raw = mgr
+            .dao()
+            .get_string(&key)
+            .await
+            .expect("get")
+            .expect("body");
+        assert!(!raw.contains("@class"), "native serde has no @class");
+        let decoded: ApiKeyModel = mgr.dao().decode(&raw).expect("decode");
+        assert_eq!(decoded.login_id, "u-key");
+        assert!(
+            mgr.dao()
+                .get_string(&mgr.keys().raw_session("apikey", "u-key"))
+                .await
+                .expect("raw")
+                .is_none(),
+            "native Serde must not write Java raw-session index"
+        );
+    }
+
+    #[tokio::test]
+    async fn java_model_key_and_index_shape() {
+        let (mgr, api) = java_manager();
+        let mut model = api.create("10001");
+        model.title = "interop".into();
+        model.scopes = vec!["user.read".into()];
+        model.expires_time = NEVER_EXPIRE;
+        api.save(&model).await.expect("save");
+
+        let body_key = api.save_key(&model.api_key);
+        assert_eq!(body_key, format!("satoken:apikey:{}", model.api_key));
+        let raw = mgr
+            .dao()
+            .get_string(&body_key)
+            .await
+            .expect("get")
+            .expect("body");
+        let v: Value = serde_json::from_str(&raw).expect("json");
+        assert_eq!(v["@class"], CLASS_API_KEY);
+        assert_eq!(v["apiKey"], model.api_key);
+        assert_eq!(v["title"], "interop");
+        assert_eq!(v["loginId"], json!([CLASS_LONG, 10001]));
+        assert_eq!(v["scopes"][0], CLASS_ARRAY_LIST);
+        assert_eq!(v["scopes"][1], json!(["user.read"]));
+        assert_eq!(v["expiresTime"], -1);
+        assert_eq!(v["isValid"], true);
+
+        let session_key = mgr.keys().raw_session("apikey", "10001");
+        assert_eq!(session_key, "satoken:raw-session:apikey:10001");
+        let sraw = mgr
+            .dao()
+            .get_string(&session_key)
+            .await
+            .expect("session")
+            .expect("raw");
+        let s: Value = serde_json::from_str(&sraw).expect("json");
+        assert_eq!(s["@class"], "cn.dev33.satoken.session.SaSession");
+        assert_eq!(s["type"], "apikey");
+        assert_eq!(s["id"], session_key);
+        assert_eq!(
+            s["dataMap"][API_KEY_LIST],
+            json!([CLASS_ARRAY_LIST, [model.api_key.clone()]])
+        );
+
+        let checked = api.check(&model.api_key).await.expect("check");
+        assert_eq!(checked.login_id, "10001");
+        assert_eq!(checked.scopes, vec!["user.read"]);
+        let list = api.list_by_login_id("10001").await.expect("list");
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].api_key, model.api_key);
     }
 }

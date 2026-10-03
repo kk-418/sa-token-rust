@@ -1,0 +1,31 @@
+{
+  "scenario" : "temp_token_str",
+  "notes" : "SaTempUtil.createToken(\"hello\", -1, true)；值是 JSON 字符串 \"hello\"；索引 raw-session dataMap __HD_TEMP_TOKEN_MAP。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "value" : "hello"
+  },
+  "tokens" : {
+    "tempToken" : "b64b91b8b56d4ff9954ecdbd2dafb2c8"
+  },
+  "kv" : [ {
+    "key" : "satoken:raw-session:temp-token:hello",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566760,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\",\"__HD_TEMP_TOKEN_MAP\":{\"@class\":\"java.util.LinkedHashMap\",\"b64b91b8b56d4ff9954ecdbd2dafb2c8\":[\"java.lang.Long\",-1]}},\"historyTerminalCount\":0,\"id\":\"satoken:raw-session:temp-token:hello\",\"loginId\":null,\"loginType\":null,\"terminalList\":[\"java.util.Vector\",[]],\"token\":null,\"type\":\"temp-token\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:temp-token:b64b91b8b56d4ff9954ecdbd2dafb2c8",
+    "value" : "\"hello\"",
+    "ttl" : -1
+  } ]
+}

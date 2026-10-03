@@ -1,0 +1,27 @@
+{
+  "scenario" : "sign_nonce",
+  "notes" : "checkNonce 写入 satoken:sign:nonce:{n}，value=nonce，ttl=window*2+2（默认 1802s，会变，不作为金样断言）。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "nonce" : "interop-nonce-001"
+  },
+  "tokens" : {
+    "nonce" : "interop-nonce-001"
+  },
+  "kv" : [ {
+    "key" : "satoken:sign:nonce:interop-nonce-001",
+    "value" : "interop-nonce-001",
+    "ttl" : 1802
+  } ]
+}

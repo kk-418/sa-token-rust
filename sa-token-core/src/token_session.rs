@@ -7,30 +7,41 @@
 //! - Token-Session 按 token 隔离，每次登录各有一份，token 下线即销毁
 
 use crate::error::{SaTokenError, SaTokenResult};
+use crate::keys::LOGIN_TYPE_DEFAULT;
 use crate::manager::SaTokenManager;
 use crate::session::SaSession;
 use crate::token::TokenValue;
 
 impl SaTokenManager {
-    /// Token-Session 的 id 命名规则（逻辑 id，非存储键）
-    fn token_session_id(token: &str) -> String {
-        format!("token-session:{token}")
-    }
-
     /// 获取 Token-Session（不存在时按配置决定是否落盘创建）
     pub async fn get_token_session(&self, token: &TokenValue) -> SaTokenResult<SaSession> {
-        if self.config.token_session_check_login && !self.is_valid(token).await {
+        self.get_token_session_typed(LOGIN_TYPE_DEFAULT, token)
+            .await
+    }
+
+    /// Fetch a Token-Session under an explicit login type.
+    /// 按指定 login_type 获取 Token-Session。
+    pub async fn get_token_session_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+    ) -> SaTokenResult<SaSession> {
+        if self.config.token_session_check_login && !self.is_valid_typed(login_type, token).await {
             return Err(SaTokenError::NotLogin);
         }
 
-        if let Some(session) = self.session_repo().get_token_session(token).await? {
+        if let Some(session) = self
+            .session_repo()
+            .get_token_session_typed(login_type, token)
+            .await?
+        {
             return Ok(session);
         }
 
-        let session = SaSession::new(Self::token_session_id(token.as_str()));
+        let session = self.session_repo().new_token_session(login_type, token);
         if self.config.right_now_create_token_session {
             self.session_repo()
-                .save_token_session(token, &session)
+                .save_token_session_typed(login_type, token, &session)
                 .await?;
         }
         Ok(session)
@@ -38,10 +49,25 @@ impl SaTokenManager {
 
     /// 匿名 Token-Session：跳过登录校验，且从不自动落盘
     pub async fn get_anon_token_session(&self, token: &TokenValue) -> SaTokenResult<SaSession> {
-        if let Some(session) = self.session_repo().get_token_session(token).await? {
+        self.get_anon_token_session_typed(LOGIN_TYPE_DEFAULT, token)
+            .await
+    }
+
+    /// Anonymous Token-Session under an explicit login type.
+    /// 按指定 login_type 加载匿名 Token-Session。
+    pub async fn get_anon_token_session_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+    ) -> SaTokenResult<SaSession> {
+        if let Some(session) = self
+            .session_repo()
+            .get_token_session_typed(login_type, token)
+            .await?
+        {
             return Ok(session);
         }
-        Ok(SaSession::new(Self::token_session_id(token.as_str())))
+        Ok(self.session_repo().new_token_session(login_type, token))
     }
 
     /// 保存 Token-Session（TTL 与 token 生命周期对齐）
@@ -50,12 +76,39 @@ impl SaTokenManager {
         token: &TokenValue,
         session: &SaSession,
     ) -> SaTokenResult<()> {
-        self.session_repo().save_token_session(token, session).await
+        self.save_token_session_typed(LOGIN_TYPE_DEFAULT, token, session)
+            .await
+    }
+
+    /// Persist a Token-Session under an explicit login type.
+    /// 按指定 login_type 保存 Token-Session。
+    pub async fn save_token_session_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+        session: &SaSession,
+    ) -> SaTokenResult<()> {
+        self.session_repo()
+            .save_token_session_typed(login_type, token, session)
+            .await
     }
 
     /// 删除 Token-Session
     pub async fn delete_token_session(&self, token: &TokenValue) -> SaTokenResult<()> {
-        self.session_repo().delete_token_session(token).await
+        self.delete_token_session_typed(LOGIN_TYPE_DEFAULT, token)
+            .await
+    }
+
+    /// Delete a Token-Session under an explicit login type.
+    /// 按指定 login_type 删除 Token-Session。
+    pub async fn delete_token_session_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+    ) -> SaTokenResult<()> {
+        self.session_repo()
+            .delete_token_session_typed(login_type, token)
+            .await
     }
 }
 

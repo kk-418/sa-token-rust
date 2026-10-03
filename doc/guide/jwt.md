@@ -2,7 +2,7 @@
 
 English | [中文](/zh/guide/jwt.md)
 
-Issue login tokens as JWTs by setting `TokenStyle::Jwt` and `jwt_secret_key`. `try_build` validates this at startup. For standalone sign/verify outside the login pipeline, use `JwtManager`.
+Issue login tokens as JWTs by setting `TokenStyle::Jwt` and `jwt_secret_key`. `try_build` validates this at startup. For standalone sign/verify outside the login pipeline, use `JwtManager`. To share JWTs with Java Sa-Token, see [Java interop](./java-interop.md).
 
 ## When to use
 
@@ -80,5 +80,6 @@ Common APIs: `generate`, `validate`, `refresh`, `extract_login_id`. See `JwtAlgo
 ## Related
 
 - [Token styles](/guide/token-styles.md)
+- [Java interop](/guide/java-interop.md)
 - [Security features](/guide/security-features.md)
 - [Error reference](/reference/error-reference.md)

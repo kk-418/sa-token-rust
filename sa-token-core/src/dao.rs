@@ -17,9 +17,11 @@ use sa_token_adapter::storage::{SaStorage, ScanPage, scan_all_keys_dedup};
 use serde::{Serialize, de::DeserializeOwned};
 
 use crate::codec::{decode_value, encode_value};
+use crate::compat::WireCodec;
 use crate::config::SaTokenConfig;
 use crate::error::{SaTokenError, SaTokenResult};
 use crate::keys::SaKeys;
+use crate::session::SaSession;
 
 /// 存储访问层：封装键构造、序列化与底层原子原语。
 /// Storage access layer wrapping key building, serialization and atomic primitives.
@@ -32,6 +34,8 @@ pub struct SaTokenDao {
     config: Arc<SaTokenConfig>,
     /// 键构造器（A3：唯一 schema 来源）| Key builder (A3: single schema source)
     keys: SaKeys,
+    /// Value codec selected by `config.wire` | 由 `config.wire` 选择的值编解码器
+    wire: WireCodec,
     /// 默认 TTL 快照（config.timeout；-1 永久时为 None）
     /// Cached default TTL derived from `config.timeout` (`None` when permanent)
     default_ttl: Option<Duration>,
@@ -53,11 +57,13 @@ impl SaTokenDao {
     /// `Arc<SaTokenConfig>` keeps the config cloned exactly once per manager.
     pub fn new(storage: Arc<dyn SaStorage>, config: Arc<SaTokenConfig>) -> Self {
         let keys = SaKeys::from_config(&config);
+        let wire = WireCodec::from_config(&config);
         let default_ttl = config.timeout_duration();
         Self {
             storage,
             config,
             keys,
+            wire,
             default_ttl,
         }
     }
@@ -80,6 +86,11 @@ impl SaTokenDao {
     /// 键构造器（A3 契约：返回引用，不克隆）| Key builder (A3: returns a reference)
     pub fn keys(&self) -> &SaKeys {
         &self.keys
+    }
+
+    /// Value codec | 值编解码器
+    pub fn wire(&self) -> &WireCodec {
+        &self.wire
     }
 
     /// 默认 token TTL（config.timeout 秒；-1 永久为 None）
@@ -273,6 +284,63 @@ impl SaTokenDao {
             .set_keep_ttl(key, &raw)
             .await
             .map_err(|e| SaTokenError::StorageError(e.to_string()))
+    }
+
+    /// Read a session via [`WireCodec`]. Missing keys return `None`.
+    /// 经 [`WireCodec`] 读取 Session；键缺失返回 `None`。
+    pub async fn get_session(&self, key: &str) -> SaTokenResult<Option<SaSession>> {
+        match self.get_string(key).await? {
+            Some(raw) => Ok(Some(self.wire.decode_session(&raw)?)),
+            None => Ok(None),
+        }
+    }
+
+    /// Encode a session via [`WireCodec`] and write it.
+    /// 经 [`WireCodec`] 编码并写入 Session。
+    pub async fn set_session(
+        &self,
+        key: &str,
+        session: &SaSession,
+        ttl: Option<Duration>,
+    ) -> SaTokenResult<()> {
+        let raw = self.wire.encode_session(session)?;
+        self.set_string(key, &raw, ttl).await
+    }
+
+    /// Encode a session and overwrite while keeping the existing key TTL.
+    /// 编码 Session 后 KEEPTTL 覆盖写入。
+    pub async fn update_session_keep_ttl(
+        &self,
+        key: &str,
+        session: &SaSession,
+    ) -> SaTokenResult<()> {
+        let raw = self.wire.encode_session(session)?;
+        self.storage
+            .set_keep_ttl(key, &raw)
+            .await
+            .map_err(|e| SaTokenError::StorageError(e.to_string()))
+    }
+
+    /// Align Java `SaTokenDao.set(key, value, timeout)`:
+    /// `-1` = no TTL; `<= 0` (except `-1`) deletes; `> 0` uses that many seconds.
+    /// Never issues a 0-second SETEX.
+    ///
+    /// 对齐 Java `SaTokenDao.set(key, value, timeout)`：
+    /// `-1` 永久；除 `-1` 外 `<= 0` 删键；`> 0` 为秒数。不会下发 0 秒 SETEX。
+    pub async fn set_with_java_timeout(
+        &self,
+        key: &str,
+        value: &str,
+        timeout_secs: i64,
+    ) -> SaTokenResult<()> {
+        match timeout_secs {
+            -1 => self.set_string(key, value, None).await,
+            n if n <= 0 => self.delete(key).await,
+            n => {
+                self.set_string(key, value, Some(Duration::from_secs(n as u64)))
+                    .await
+            }
+        }
     }
 
     /// 读取字符串列表（键缺失视为空列表）| Read a string list (absent = empty)

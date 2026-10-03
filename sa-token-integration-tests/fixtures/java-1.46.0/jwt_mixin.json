@@ -1,0 +1,28 @@
+{
+  "scenario" : "jwt_mixin",
+  "notes" : "JWT Mixin：claims 含 deviceType/eff=-1；写 Account-Session+terminal，不写 token key。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "mixin",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001,
+    "device" : "DEF"
+  },
+  "tokens" : {
+    "token" : "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOjEwMDAxLCJkZXZpY2VUeXBlIjoiREVGIiwiZWZmIjotMSwicm5TdHIiOiJ1ZVNRcHNxQlZ5eU1uOGpwcHF0MHp1djNScWJqNG1IViJ9.MjpjJf41GCO1zavVnvE9SW4mSi-JuuHqApfwgcUby7k"
+  },
+  "kv" : [ {
+    "key" : "satoken:login:session:10001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566803,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\"},\"historyTerminalCount\":1,\"id\":\"satoken:login:session:10001\",\"loginId\":[\"java.lang.Long\",10001],\"loginType\":\"login\",\"terminalList\":[\"java.util.Vector\",[{\"@class\":\"cn.dev33.satoken.session.SaTerminalInfo\",\"createTime\":1791000566803,\"deviceId\":null,\"deviceType\":\"DEF\",\"extraData\":null,\"index\":1,\"tokenValue\":\"eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOjEwMDAxLCJkZXZpY2VUeXBlIjoiREVGIiwiZWZmIjotMSwicm5TdHIiOiJ1ZVNRcHNxQlZ5eU1uOGpwcHF0MHp1djNScWJqNG1IViJ9.MjpjJf41GCO1zavVnvE9SW4mSi-JuuHqApfwgcUby7k\"}]],\"token\":null,\"type\":\"Account-Session\"}",
+    "ttl" : -1
+  } ]
+}

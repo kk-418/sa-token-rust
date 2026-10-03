@@ -6,7 +6,7 @@ use common::setup;
 use sa_token_core::{ApiKeyManager, SaTokenContext, SaTokenError};
 
 fn api_of(mgr: &sa_token_core::SaTokenManager) -> ApiKeyManager {
-    ApiKeyManager::new(mgr)
+    ApiKeyManager::new(mgr.dao().clone())
 }
 
 #[tokio::test]
@@ -63,10 +63,10 @@ async fn check_expired_via_storage_clock() {
         .expect("get")
         .expect("model in storage");
     loaded.expires_time = chrono::Utc::now().timestamp_millis() - 5_000;
-    let key = format!("{}:apikey:{}", mgr.config.token_name, loaded.api_key);
-    let raw = mgr.config.encode(&loaded).expect("encode");
-    mgr.storage()
-        .set(&key, &raw, None)
+    let key = api.save_key(&loaded.api_key);
+    let raw = mgr.dao().encode(&loaded).expect("encode");
+    mgr.dao()
+        .set_string(&key, &raw, None)
         .await
         .expect("storage set");
 

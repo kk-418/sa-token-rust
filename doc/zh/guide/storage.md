@@ -180,6 +180,8 @@ let state = SaTokenState::builder()
 
 URL 示例：`redis://localhost:6379/0`、`redis://:mypass@localhost:6379/0`。
 
+与 Java Sa-Token 共享 Redis 时，存储层 `key_prefix` 必须是空串。Java 布局用 `token_name` 作键根（`satoken:login:token:...`）。再加 `sa:` 会变成 `sa:satoken:login:token:`，Java 读不到。请用 `RedisStorage::connect(...)` 或 `.key_prefix("")`。详见 [与 Java 共享 Token](./java-interop.md)。
+
 ---
 
 ## DatabaseStorage
@@ -223,4 +225,5 @@ let state = SaTokenState::builder()
 - [框架适配器](./adapter.md)
 - [框架集成](./framework-integration.md)
 - [迁移到 0.2](./migration-0.2.md)
+- [与 Java 共享 Token](./java-interop.md)
 - [错误参考](../reference/error-reference.md)

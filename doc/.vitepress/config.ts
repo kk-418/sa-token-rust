@@ -24,6 +24,7 @@ const enSidebar = [
     text: 'Advanced',
     items: [
       { text: 'JWT', link: '/guide/jwt' },
+      { text: 'Java interop', link: '/guide/java-interop' },
       { text: 'OAuth2', link: '/guide/oauth2' },
       { text: 'Security features', link: '/guide/security-features' },
       { text: 'WebSocket auth', link: '/guide/websocket-auth' },
@@ -67,6 +68,7 @@ const zhSidebar = [
     text: '进阶',
     items: [
       { text: 'JWT', link: '/zh/guide/jwt' },
+      { text: '与 Java 共享 Token', link: '/zh/guide/java-interop' },
       { text: 'OAuth2', link: '/zh/guide/oauth2' },
       { text: '安全特性', link: '/zh/guide/security-features' },
       { text: 'WebSocket 认证', link: '/zh/guide/websocket-auth' },

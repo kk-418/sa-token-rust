@@ -1,0 +1,37 @@
+{
+  "scenario" : "replaced",
+  "notes" : "isConcurrent=false 二次登录顶号；旧 token 值变为 -4（BE_REPLACED）。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : false,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001,
+    "device" : "PC"
+  },
+  "tokens" : {
+    "token" : "e7ceddd2-456b-4127-9702-faa776fe14a8",
+    "replacedToken" : "1230a7ee-2e1b-41af-8e39-3d2e923d269f"
+  },
+  "kv" : [ {
+    "key" : "satoken:login:session:10001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566750,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\"},\"historyTerminalCount\":2,\"id\":\"satoken:login:session:10001\",\"loginId\":[\"java.lang.Long\",10001],\"loginType\":\"login\",\"terminalList\":[\"java.util.Vector\",[{\"@class\":\"cn.dev33.satoken.session.SaTerminalInfo\",\"createTime\":1791000566750,\"deviceId\":null,\"deviceType\":\"PC\",\"extraData\":null,\"index\":2,\"tokenValue\":\"e7ceddd2-456b-4127-9702-faa776fe14a8\"}]],\"token\":null,\"type\":\"Account-Session\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:token:1230a7ee-2e1b-41af-8e39-3d2e923d269f",
+    "value" : "-4",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:token:e7ceddd2-456b-4127-9702-faa776fe14a8",
+    "value" : "10001",
+    "ttl" : -1
+  } ]
+}

@@ -5,10 +5,7 @@
 //! Account disable / ban checks, with one deliberate
 //! difference: every method is **account-system aware** (A3-18).
 
-use std::time::Duration;
-
 use crate::error::{SaTokenError, SaTokenResult};
-use crate::keys::LOGIN_TYPE_DEFAULT;
 use crate::manager::SaTokenManager;
 
 /// Default ban service identifier | 默认封禁服务标识
@@ -54,17 +51,11 @@ impl SaTokenManager {
             )));
         }
 
-        let ttl = if time < 0 {
-            None
-        } else {
-            Some(Duration::from_secs(time as u64))
-        };
-
         self.dao
-            .set_string(
+            .set_with_java_timeout(
                 &self.disable_key_ns(login_type, login_id, service),
                 &level.to_string(),
-                ttl,
+                time,
             )
             .await?;
 
@@ -83,14 +74,9 @@ impl SaTokenManager {
         login_id: &str,
         time: i64,
     ) -> SaTokenResult<()> {
-        self.disable_level_with_type(
-            login_type,
-            login_id,
-            DEFAULT_DISABLE_SERVICE,
-            DEFAULT_DISABLE_LEVEL,
-            time,
-        )
-        .await
+        let service = self.config.wire.default_disable_service.clone();
+        self.disable_level_with_type(login_type, login_id, &service, DEFAULT_DISABLE_LEVEL, time)
+            .await
     }
 
     /// Read disable level for a login type | 按登录类型读取禁用等级
@@ -197,19 +183,21 @@ impl SaTokenManager {
         level: i32,
         time: i64,
     ) -> SaTokenResult<()> {
-        self.disable_level_with_type(LOGIN_TYPE_DEFAULT, login_id, service, level, time)
+        let login_type = self.config.wire.default_login_type.clone();
+        self.disable_level_with_type(&login_type, login_id, service, level, time)
             .await
     }
 
     /// Disable account/service | 禁用账号或服务
     pub async fn disable(&self, login_id: &str, time: i64) -> SaTokenResult<()> {
-        self.disable_with_type(LOGIN_TYPE_DEFAULT, login_id, time)
-            .await
+        let login_type = self.config.wire.default_login_type.clone();
+        self.disable_with_type(&login_type, login_id, time).await
     }
 
     /// Read disable level | 读取禁用等级
     pub async fn get_disable_level(&self, login_id: &str, service: &str) -> SaTokenResult<i32> {
-        self.get_disable_level_with_type(LOGIN_TYPE_DEFAULT, login_id, service)
+        let login_type = self.config.wire.default_login_type.clone();
+        self.get_disable_level_with_type(&login_type, login_id, service)
             .await
     }
 
@@ -220,7 +208,8 @@ impl SaTokenManager {
         service: &str,
         level: i32,
     ) -> SaTokenResult<bool> {
-        self.is_disable_level_with_type(LOGIN_TYPE_DEFAULT, login_id, service, level)
+        let login_type = self.config.wire.default_login_type.clone();
+        self.is_disable_level_with_type(&login_type, login_id, service, level)
             .await
     }
 
@@ -231,7 +220,8 @@ impl SaTokenManager {
         service: &str,
         level: i32,
     ) -> SaTokenResult<()> {
-        self.check_disable_level_with_type(LOGIN_TYPE_DEFAULT, login_id, service, level)
+        let login_type = self.config.wire.default_login_type.clone();
+        self.check_disable_level_with_type(&login_type, login_id, service, level)
             .await
     }
 
@@ -242,13 +232,15 @@ impl SaTokenManager {
         services: &[&str],
         level: i32,
     ) -> SaTokenResult<()> {
-        self.check_disable_services_with_type(LOGIN_TYPE_DEFAULT, login_id, services, level)
+        let login_type = self.config.wire.default_login_type.clone();
+        self.check_disable_services_with_type(&login_type, login_id, services, level)
             .await
     }
 
     /// Clear disable flag | 解除禁用
     pub async fn untie_disable(&self, login_id: &str, service: &str) -> SaTokenResult<()> {
-        self.untie_disable_with_type(LOGIN_TYPE_DEFAULT, login_id, service)
+        let login_type = self.config.wire.default_login_type.clone();
+        self.untie_disable_with_type(&login_type, login_id, service)
             .await
     }
 
@@ -273,7 +265,9 @@ impl SaTokenManager {
     /// Remaining disable seconds (default login type / service).
     /// 剩余封禁秒数（默认登录类型与服务）。
     pub async fn get_disable_time(&self, login_id: &str) -> SaTokenResult<i64> {
-        self.get_disable_time_with_type(LOGIN_TYPE_DEFAULT, login_id, DEFAULT_DISABLE_SERVICE)
+        let login_type = self.config.wire.default_login_type.clone();
+        let service = self.config.wire.default_disable_service.clone();
+        self.get_disable_time_with_type(&login_type, login_id, &service)
             .await
     }
 
@@ -284,14 +278,16 @@ impl SaTokenManager {
         login_id: &str,
         service: &str,
     ) -> SaTokenResult<i64> {
-        self.get_disable_time_with_type(LOGIN_TYPE_DEFAULT, login_id, service)
+        let login_type = self.config.wire.default_login_type.clone();
+        self.get_disable_time_with_type(&login_type, login_id, service)
             .await
     }
 
     /// Whether the account is banned. Does not throw `AccountBanned`.
     /// 账号是否被封禁。不抛 `AccountBanned`。
     pub async fn is_disable(&self, login_id: &str) -> SaTokenResult<bool> {
-        self.is_disable_level(login_id, DEFAULT_DISABLE_SERVICE, MIN_DISABLE_LEVEL)
+        let service = self.config.wire.default_disable_service.clone();
+        self.is_disable_level(login_id, &service, MIN_DISABLE_LEVEL)
             .await
     }
 
@@ -312,6 +308,13 @@ mod tests {
 
     fn manager() -> SaTokenManager {
         SaTokenManager::new(Arc::new(MemoryStorage::new()), SaTokenConfig::default())
+    }
+
+    fn java_manager() -> SaTokenManager {
+        SaTokenManager::new(
+            Arc::new(MemoryStorage::new()),
+            SaTokenConfig::java_compatible(),
+        )
     }
 
     #[tokio::test]
@@ -348,5 +351,29 @@ mod tests {
             mgr.get_disable_time_service("u2", "login").await.unwrap(),
             -1
         );
+    }
+
+    #[tokio::test]
+    async fn time_zero_deletes_key() {
+        let mgr = manager();
+        mgr.disable("u1", 60).await.unwrap();
+        assert!(mgr.is_disable("u1").await.unwrap());
+        mgr.disable("u1", 0).await.unwrap();
+        assert!(!mgr.is_disable("u1").await.unwrap());
+        assert_eq!(mgr.get_disable_time("u1").await.unwrap(), -2);
+    }
+
+    #[tokio::test]
+    async fn java_disable_writes_level_one_on_login_service_key() {
+        let mgr = java_manager();
+        mgr.disable("10001", -1).await.unwrap();
+        let key = mgr.keys().disable("login", "10001", "login");
+        assert_eq!(key, "satoken:login:disable:login:10001");
+        assert_eq!(
+            mgr.dao().get_string(&key).await.unwrap().as_deref(),
+            Some("1")
+        );
+        assert_eq!(mgr.get_disable_time("10001").await.unwrap(), -1);
+        assert!(mgr.is_disable("10001").await.unwrap());
     }
 }

@@ -2,7 +2,7 @@
 
 [English](/guide/jwt.md) | 中文
 
-把登录 token 发成 JWT：配置 `TokenStyle::Jwt` 与 `jwt_secret_key`，由 `try_build` 在启动时校验。需要独立签发/验签时，可用 `JwtManager`。
+把登录 token 发成 JWT：配置 `TokenStyle::Jwt` 与 `jwt_secret_key`，由 `try_build` 在启动时校验。需要独立签发/验签时，可用 `JwtManager`。与 Java Sa-Token 共享 JWT 时，见 [与 Java 共享 Token](./java-interop.md)。
 
 ## 何时使用
 
@@ -80,5 +80,6 @@ assert_eq!(decoded.login_id, "user_10086");
 ## 相关链接
 
 - [Token 风格](/zh/guide/token-styles.md)
+- [与 Java 共享 Token](/zh/guide/java-interop.md)
 - [安全特性](/zh/guide/security-features.md)
 - [错误参考](/zh/reference/error-reference.md)

@@ -849,6 +849,7 @@ warp::serve(routes)
 - **Authentication & Authorization**
   - [Event Listener Guide](docs/EVENT_LISTENER.md) - Monitor authentication events (Login, Logout, KickOut)
   - [JWT Guide](docs/JWT_GUIDE.md) - JSON Web Token implementation with 8 algorithms
+  - [Share tokens with Java Sa-Token](doc/guide/java-interop.md) - Redis + JWT wire compatibility with Java Sa-Token 1.46.0
   - [OAuth2 Guide](docs/OAUTH2_GUIDE.md) - OAuth2 authorization code flow
 
 - **Real-time & WebSocket**

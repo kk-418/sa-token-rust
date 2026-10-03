@@ -107,7 +107,7 @@ impl SaLogic {
     pub async fn get_login_id(&self, token: &TokenValue) -> SaTokenResult<String> {
         Ok(self
             .manager
-            .get_token_info(token)
+            .get_token_info_typed(&self.login_type, token)
             .await?
             .login_id
             .to_string())
@@ -115,7 +115,7 @@ impl SaLogic {
 
     /// Whether the token is valid | Token 是否有效
     pub async fn is_valid(&self, token: &TokenValue) -> bool {
-        self.manager.is_valid(token).await
+        self.manager.is_valid_typed(&self.login_type, token).await
     }
 
     /// Load account session | 加载账号 Session
@@ -387,12 +387,16 @@ impl SaLogic {
 
     /// Load token-scoped session | 加载 Token 级 Session
     pub async fn get_token_session(&self, token: &TokenValue) -> SaTokenResult<SaSession> {
-        self.manager.get_token_session(token).await
+        self.manager
+            .get_token_session_typed(&self.login_type, token)
+            .await
     }
 
     /// Load anonymous token session | 加载匿名 Token Session
     pub async fn get_anon_token_session(&self, token: &TokenValue) -> SaTokenResult<SaSession> {
-        self.manager.get_anon_token_session(token).await
+        self.manager
+            .get_anon_token_session_typed(&self.login_type, token)
+            .await
     }
 
     /// `save_token_session` — save token session | `save_token_session`
@@ -401,12 +405,16 @@ impl SaLogic {
         token: &TokenValue,
         session: &SaSession,
     ) -> SaTokenResult<()> {
-        self.manager.save_token_session(token, session).await
+        self.manager
+            .save_token_session_typed(&self.login_type, token, session)
+            .await
     }
 
     /// `delete_token_session` — delete token session | `delete_token_session`
     pub async fn delete_token_session(&self, token: &TokenValue) -> SaTokenResult<()> {
-        self.manager.delete_token_session(token).await
+        self.manager
+            .delete_token_session_typed(&self.login_type, token)
+            .await
     }
 
     // ---------- 身份临时切换 | Identity switch ----------

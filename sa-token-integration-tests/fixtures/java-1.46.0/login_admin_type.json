@@ -1,0 +1,33 @@
+{
+  "scenario" : "login_admin_type",
+  "notes" : "SaManager.getStpLogic(\"admin\", true).login(20001L)；key 段为 satoken:admin:…。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "admin"
+  },
+  "inputs" : {
+    "loginId" : 20001,
+    "loginType" : "admin",
+    "device" : "DEF"
+  },
+  "tokens" : {
+    "token" : "35a5e194-176c-469e-b7a2-ab6b2a2e25f0"
+  },
+  "kv" : [ {
+    "key" : "satoken:admin:session:20001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566721,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\"},\"historyTerminalCount\":1,\"id\":\"satoken:admin:session:20001\",\"loginId\":[\"java.lang.Long\",20001],\"loginType\":\"admin\",\"terminalList\":[\"java.util.Vector\",[{\"@class\":\"cn.dev33.satoken.session.SaTerminalInfo\",\"createTime\":1791000566721,\"deviceId\":null,\"deviceType\":\"DEF\",\"extraData\":null,\"index\":1,\"tokenValue\":\"35a5e194-176c-469e-b7a2-ab6b2a2e25f0\"}]],\"token\":null,\"type\":\"Account-Session\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:admin:token:35a5e194-176c-469e-b7a2-ab6b2a2e25f0",
+    "value" : "20001",
+    "ttl" : -1
+  } ]
+}

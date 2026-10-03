@@ -46,6 +46,34 @@ pub struct ScanPage {
     pub next_cursor: u64,
 }
 
+/// TTL 三态，对齐 Redis `TTL`：`-2` missing / `-1` persistent / `>=0` remaining。
+///
+/// 现有 [`SaStorage::ttl`] 把 missing 与永久都映射为 `None`；Java 互通需要区分。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TtlState {
+    /// 键不存在或已过期（Redis TTL `-2`）
+    Missing,
+    /// 键存在且永不过期（Redis TTL `-1`）
+    Persistent,
+    /// 键存在且带剩余 TTL（Redis TTL `>= 0`）
+    Expires {
+        /// 剩余存活时间
+        remaining: Duration,
+    },
+}
+
+/// Sub-second / zero TTL must not become Redis `SETEX 0`.
+///
+/// - `as_secs() == 0`（含 `Duration::ZERO` 与不足 1s）→ 向上取 1 秒
+/// - 已满 1 秒的 TTL 原样返回（秒级行为不变）
+pub fn ceil_subsecond_ttl(ttl: Duration) -> Duration {
+    if ttl.as_secs() == 0 {
+        Duration::from_secs(1)
+    } else {
+        ttl
+    }
+}
+
 /// 存储适配器 trait
 ///
 /// ## 键契约（A3）| Key Contract (A3)
@@ -69,7 +97,22 @@ pub trait SaStorage: Send + Sync {
     /// Update key TTL | 更新键过期时间
     async fn expire(&self, key: &str, ttl: Duration) -> StorageResult<()>;
     /// Remaining TTL, if any | 剩余过期时间（若有）
+    ///
+    /// Missing 与永久均返回 `None`。需要区分时用 [`SaStorage::ttl_state`]。
     async fn ttl(&self, key: &str) -> StorageResult<Option<Duration>>;
+
+    /// Distinguish missing / persistent / expiring (Java Redis TTL `-2` / `-1` / `>=0`).
+    ///
+    /// Default: `exists` + `ttl` (TOCTOU is accepted). Does not change [`SaStorage::ttl`].
+    async fn ttl_state(&self, key: &str) -> StorageResult<TtlState> {
+        if !self.exists(key).await? {
+            return Ok(TtlState::Missing);
+        }
+        match self.ttl(key).await? {
+            Some(remaining) => Ok(TtlState::Expires { remaining }),
+            None => Ok(TtlState::Persistent),
+        }
+    }
 
     /// Overwrite value and keep the current TTL. Missing key is a successful no-op
     /// (Java `dao.update`). Default: `exists` + `ttl` + `set` (TOCTOU is accepted).
@@ -263,4 +306,49 @@ pub async fn scan_all_keys_dedup(
         .into_iter()
         .collect();
     Ok(deduped)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ceil_subsecond_ttl_never_zero_secs() {
+        assert_eq!(ceil_subsecond_ttl(Duration::ZERO), Duration::from_secs(1));
+        assert_eq!(
+            ceil_subsecond_ttl(Duration::from_millis(1)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            ceil_subsecond_ttl(Duration::from_millis(900)),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            ceil_subsecond_ttl(Duration::from_secs(30)),
+            Duration::from_secs(30)
+        );
+        assert_eq!(
+            ceil_subsecond_ttl(Duration::from_millis(1500)),
+            Duration::from_millis(1500)
+        );
+    }
+
+    #[test]
+    fn ttl_state_variants_are_distinct() {
+        assert_ne!(TtlState::Missing, TtlState::Persistent);
+        assert_ne!(
+            TtlState::Persistent,
+            TtlState::Expires {
+                remaining: Duration::from_secs(1)
+            }
+        );
+        assert_eq!(
+            TtlState::Expires {
+                remaining: Duration::from_secs(5)
+            },
+            TtlState::Expires {
+                remaining: Duration::from_secs(5)
+            }
+        );
+    }
 }

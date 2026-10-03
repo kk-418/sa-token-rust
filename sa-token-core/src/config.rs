@@ -2,6 +2,11 @@
 //
 //! 配置模块 | Configuration module
 
+use crate::compat::{
+    AccountIndex, ApiKeyFormat, ApplicationValue, JwtClaimsFormat, LastActiveStore, LoginIdJson,
+    SameTokenPastTtl, SessionFormat, SignAlgorithm, SignNonceFormat, TempTokenFormat,
+    TokenValueFormat, WireConfig,
+};
 use crate::error::{SaTokenError, SaTokenResult};
 use crate::event::{SaTokenEventBus, SaTokenListener};
 use crate::keys::SaKeyLayout;
@@ -284,6 +289,11 @@ pub struct SaTokenConfig {
     #[serde(default = "default_sign_window_secs")]
     pub sign_window_secs: i64,
 
+    /// Wire / value-format compatibility (native default; Java via [`WireConfig::java`]).
+    /// 值格式互通配置（默认原生；Java 预设见 [`WireConfig::java`]）。
+    #[serde(default)]
+    pub wire: WireConfig,
+
     /// 存储层序列化器（默认 JSON；可选 fory；不参与本结构的 serde 序列化）
     /// Storage serializer (JSON by default; optional fory; skipped by this struct's serde)
     #[serde(skip, default)]
@@ -412,6 +422,7 @@ impl Default for SaTokenConfig {
             max_try_times: 12,
             sign_secret_key: None,
             sign_window_secs: 300,
+            wire: WireConfig::native(),
             serializer: SharedSerializer::default(),
         }
     }
@@ -421,6 +432,25 @@ impl SaTokenConfig {
     /// 创建配置构建器 | Create a configuration builder
     pub fn builder() -> SaTokenConfigBuilder {
         SaTokenConfigBuilder::default()
+    }
+
+    /// Java Sa-Token v1.46.0 one-line preset.
+    /// Java Sa-Token v1.46.0 一行预设。
+    ///
+    /// Sets `token_name="satoken"`, `key_layout=JavaFourSegment`, `wire=java()`,
+    /// `max_login_count=12`, `auto_renew=false`, `active_refresh=true`,
+    /// `max_try_times=12`. Other fields stay at [`Default`].
+    pub fn java_compatible() -> Self {
+        Self {
+            token_name: "satoken".into(),
+            key_layout: SaKeyLayout::JavaFourSegment,
+            wire: WireConfig::java(),
+            max_login_count: 12,
+            auto_renew: false,
+            active_refresh: true,
+            max_try_times: 12,
+            ..Self::default()
+        }
     }
 
     /// 将 `timeout` 转为 `Duration`；永久（`< 0`）时返回 `None`
@@ -436,7 +466,10 @@ impl SaTokenConfig {
     /// Reject Jwt style without a usable secret. Call from builders.
     /// Jwt 风格必须带可用密钥。由 builder 调用。
     pub fn validate_jwt(&self) -> SaTokenResult<()> {
-        if matches!(self.token_style, TokenStyle::Jwt | TokenStyle::JwtStateless) {
+        if matches!(
+            self.token_style,
+            TokenStyle::Jwt | TokenStyle::JwtStateless | TokenStyle::JwtMixin
+        ) {
             match self.jwt_secret_key.as_deref() {
                 Some(s) if !s.trim().is_empty() => Ok(()),
                 _ => Err(SaTokenError::ConfigError(
@@ -446,6 +479,49 @@ impl SaTokenConfig {
         } else {
             Ok(())
         }
+    }
+
+    /// Reject incompatible [`WireConfig`] combinations.
+    /// 拒绝不兼容的 [`WireConfig`] 组合。
+    pub fn validate_wire(&self) -> SaTokenResult<()> {
+        if self.wire.token_value == TokenValueFormat::LoginId
+            && self.wire.last_active != LastActiveStore::SeparateKey
+        {
+            return Err(SaTokenError::ConfigError(
+                "token_value=LoginId requires last_active=SeparateKey".into(),
+            ));
+        }
+        if matches!(self.token_style, TokenStyle::JwtMixin) {
+            if self.wire.last_active != LastActiveStore::SeparateKey {
+                return Err(SaTokenError::ConfigError(
+                    "JwtMixin requires last_active=SeparateKey".into(),
+                ));
+            }
+            if !self.is_concurrent {
+                return Err(SaTokenError::ConfigError(
+                    "JwtMixin does not support is_concurrent=false".into(),
+                ));
+            }
+        }
+        if self.wire.jwt_claims == JwtClaimsFormat::Java {
+            match self.jwt_algorithm.as_deref() {
+                None => {}
+                Some(algo) if algo.eq_ignore_ascii_case("HS256") => {}
+                Some(other) => {
+                    return Err(SaTokenError::ConfigError(format!(
+                        "jwt_claims=Java requires HS256, got {other}"
+                    )));
+                }
+            }
+        }
+        if self.wire.session_format == SessionFormat::Jackson3Typed
+            && !matches!(self.key_layout, SaKeyLayout::JavaFourSegment)
+        {
+            tracing::warn!(
+                "session_format=Jackson3Typed with non-JavaFourSegment key_layout; Java session keys may not match"
+            );
+        }
+        Ok(())
     }
 
     /// Reject unusable token-read / prefix combinations.
@@ -533,6 +609,10 @@ pub enum TokenStyle {
     /// JWT Stateless (no token→loginId mapping; Java `StpLogicJwtForStateless` mode).
     #[serde(alias = "jwt-stateless")]
     JwtStateless,
+    /// JWT Mixin（Java `StpLogicJwtForMixin`）：JWT 本身无状态，登录仍写 Account-Session。
+    /// JWT Mixin (Java `StpLogicJwtForMixin`): JWT is stateless; login still writes Account-Session.
+    #[serde(alias = "jwt-mixin")]
+    JwtMixin,
     /// Hash 风格（SHA256）| Hash style (SHA256)
     #[serde(alias = "hash")]
     Hash,
@@ -1015,6 +1095,148 @@ impl SaTokenConfigBuilder {
         self
     }
 
+    /// Apply the Java Sa-Token v1.46.0 preset; later setters may override fields.
+    /// Keeps already-set storage / listeners / serializer / event_bus.
+    /// 套用 Java Sa-Token v1.46.0 预设；后续 setter 可覆盖单项。
+    /// 保留已设置的 storage / listeners / serializer / event_bus。
+    pub fn java_compatible(mut self) -> Self {
+        let serializer = self.config.serializer.clone();
+        let mut cfg = SaTokenConfig::java_compatible();
+        cfg.serializer = serializer;
+        self.config = cfg;
+        self
+    }
+
+    /// Replace the entire [`WireConfig`].
+    /// 整体替换 [`WireConfig`]。
+    pub fn wire(mut self, wire: WireConfig) -> Self {
+        self.config.wire = wire;
+        self
+    }
+
+    /// Default login type used when a type is omitted.
+    /// 省略 login_type 时使用的默认账号体系。
+    pub fn default_login_type(mut self, login_type: impl Into<String>) -> Self {
+        self.config.wire.default_login_type = login_type.into();
+        self
+    }
+
+    /// Token-key value format | Token 键值格式
+    pub fn wire_token_value(mut self, format: TokenValueFormat) -> Self {
+        self.config.wire.token_value = format;
+        self
+    }
+
+    /// Last-active storage | 最后活跃存放位置
+    pub fn wire_last_active(mut self, store: LastActiveStore) -> Self {
+        self.config.wire.last_active = store;
+        self
+    }
+
+    /// Account token index | 账号 token 反查索引
+    pub fn wire_account_index(mut self, index: AccountIndex) -> Self {
+        self.config.wire.account_index = index;
+        self
+    }
+
+    /// Session JSON format | Session JSON 格式
+    pub fn wire_session_format(mut self, format: SessionFormat) -> Self {
+        self.config.wire.session_format = format;
+        self
+    }
+
+    /// loginId JSON encoding | loginId JSON 编码
+    pub fn wire_login_id_json(mut self, format: LoginIdJson) -> Self {
+        self.config.wire.login_id_json = format;
+        self
+    }
+
+    /// Whether `login_id` may contain `:`.
+    /// `login_id` 是否允许包含 `:`。
+    pub fn allow_login_id_colon(mut self, allow: bool) -> Self {
+        self.config.wire.allow_login_id_colon = allow;
+        self
+    }
+
+    /// Default device type when login omits device.
+    /// 登录未指定设备时的默认设备类型。
+    pub fn default_device_type(mut self, device: impl Into<String>) -> Self {
+        self.config.wire.default_device_type = Some(device.into());
+        self
+    }
+
+    /// Secondary-auth occupancy value | 二级认证占位值
+    pub fn wire_safe_value(mut self, value: impl Into<String>) -> Self {
+        self.config.wire.safe_value = value.into();
+        self
+    }
+
+    /// Default secondary-auth service name | 默认二级认证服务名
+    pub fn default_safe_service(mut self, service: impl Into<String>) -> Self {
+        self.config.wire.default_safe_service = service.into();
+        self
+    }
+
+    /// Default disable service name | 默认封禁服务名
+    pub fn default_disable_service(mut self, service: impl Into<String>) -> Self {
+        self.config.wire.default_disable_service = service.into();
+        self
+    }
+
+    /// Temp-token payload format | 临时 Token 值格式
+    pub fn wire_temp_token_format(mut self, format: TempTokenFormat) -> Self {
+        self.config.wire.temp_token_format = format;
+        self
+    }
+
+    /// Temp-token key namespace | 临时 Token 键命名空间
+    pub fn temp_token_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.config.wire.temp_token_namespace = namespace.into();
+        self
+    }
+
+    /// API-key model format | API Key 模型格式
+    pub fn wire_api_key_format(mut self, format: ApiKeyFormat) -> Self {
+        self.config.wire.api_key_format = format;
+        self
+    }
+
+    /// API-key key namespace | API Key 键命名空间
+    pub fn api_key_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.config.wire.api_key_namespace = namespace.into();
+        self
+    }
+
+    /// Application / root-object format | 应用变量 / 根对象格式
+    pub fn wire_application_value(mut self, format: ApplicationValue) -> Self {
+        self.config.wire.application_value = format;
+        self
+    }
+
+    /// JWT claims layout | JWT claims 布局
+    pub fn wire_jwt_claims(mut self, format: JwtClaimsFormat) -> Self {
+        self.config.wire.jwt_claims = format;
+        self
+    }
+
+    /// Sign nonce occupancy format | 签名 nonce 占位格式
+    pub fn wire_sign_nonce(mut self, format: SignNonceFormat) -> Self {
+        self.config.wire.sign_nonce = format;
+        self
+    }
+
+    /// Request-sign algorithm | 请求签名算法
+    pub fn wire_sign_algorithm(mut self, algorithm: SignAlgorithm) -> Self {
+        self.config.wire.sign_algorithm = algorithm;
+        self
+    }
+
+    /// Same-Token past-key TTL | Same-Token 旧键 TTL
+    pub fn wire_same_token_past_ttl(mut self, policy: SameTokenPastTtl) -> Self {
+        self.config.wire.same_token_past_ttl = policy;
+        self
+    }
+
     /// 设置存储层序列化器（默认 JSON）
     /// Set the storage serializer (JSON by default)
     pub fn serializer(mut self, serializer: SharedSerializer) -> Self {
@@ -1122,6 +1344,7 @@ impl SaTokenConfigBuilder {
             config.serializer = serializer;
         }
         config.validate_jwt()?;
+        config.validate_wire()?;
         config.validate_token_io()?;
         let storage = self.storage.ok_or_else(|| {
             SaTokenError::ConfigError("Storage must be set before building SaTokenManager".into())
@@ -1158,6 +1381,7 @@ impl SaTokenConfigBuilder {
             config.serializer = serializer;
         }
         config.validate_jwt()?;
+        config.validate_wire()?;
         Ok(config)
     }
 }

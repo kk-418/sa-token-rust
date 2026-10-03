@@ -1,0 +1,34 @@
+{
+  "scenario" : "temp_token_map",
+  "notes" : "根对象 Map 走 jackson3 mapObjectMapper，写出 {\"name\":\"alice\",\"id\":10001}（无 @class）。parseToken(Object.class) 会因缺 @class 失败；请用 jsonToMap 读。Rust JavaRoot 应对齐「无 @class」。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "value" : {
+      "name" : "alice",
+      "id" : 10001
+    }
+  },
+  "tokens" : {
+    "tempToken" : "2b9a8ad697a844d1a9a6e109bc39f3bc"
+  },
+  "kv" : [ {
+    "key" : "satoken:raw-session:temp-token:{name=alice, id=10001}",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566762,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\",\"__HD_TEMP_TOKEN_MAP\":{\"@class\":\"java.util.LinkedHashMap\",\"2b9a8ad697a844d1a9a6e109bc39f3bc\":[\"java.lang.Long\",-1]}},\"historyTerminalCount\":0,\"id\":\"satoken:raw-session:temp-token:{name=alice, id=10001}\",\"loginId\":null,\"loginType\":null,\"terminalList\":[\"java.util.Vector\",[]],\"token\":null,\"type\":\"temp-token\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:temp-token:2b9a8ad697a844d1a9a6e109bc39f3bc",
+    "value" : "{\"name\":\"alice\",\"id\":10001}",
+    "ttl" : -1
+  } ]
+}

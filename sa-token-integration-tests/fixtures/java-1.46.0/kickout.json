@@ -1,0 +1,27 @@
+{
+  "scenario" : "kickout",
+  "notes" : "kickout 后 token key 值变为 -5（KICK_OUT），Account-Session 终端清空后删除。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001
+  },
+  "tokens" : {
+    "token" : "6277b8bf-9136-48bc-be87-4153468abefa"
+  },
+  "kv" : [ {
+    "key" : "satoken:login:token:6277b8bf-9136-48bc-be87-4153468abefa",
+    "value" : "-5",
+    "ttl" : -1
+  } ]
+}

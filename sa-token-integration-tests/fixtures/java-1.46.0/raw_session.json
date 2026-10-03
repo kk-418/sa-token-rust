@@ -1,0 +1,28 @@
+{
+  "scenario" : "raw_session",
+  "notes" : "SaRawSessionUtil.getSessionById(\"user\", 10001L)；key satoken:raw-session:user:10001。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "type" : "user",
+    "valueId" : 10001,
+    "dataKey" : "flag",
+    "dataValue" : "raw"
+  },
+  "tokens" : { },
+  "kv" : [ {
+    "key" : "satoken:raw-session:user:10001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566760,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\",\"flag\":\"raw\"},\"historyTerminalCount\":0,\"id\":\"satoken:raw-session:user:10001\",\"loginId\":null,\"loginType\":null,\"terminalList\":[\"java.util.Vector\",[]],\"token\":null,\"type\":\"user\"}",
+    "ttl" : -1
+  } ]
+}

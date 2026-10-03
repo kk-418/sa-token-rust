@@ -20,6 +20,12 @@ Thumbs.db
 .env
 .env.local
 
+# Java interop harness build output
+interop/java/out/
+
+# Local dumps / scratch
+/temp/
+
 # Documentation
 /book/
 examples/axum-full-example/target

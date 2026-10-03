@@ -1,0 +1,32 @@
+{
+  "scenario" : "jwt_simple",
+  "notes" : "JWT Simple：claims loginType/loginId/rnStr + extra 平铺，无 deviceType/eff；仍写 token key + Account-Session。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "simple",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001,
+    "extraAge" : 18
+  },
+  "tokens" : {
+    "token" : "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOjEwMDAxLCJyblN0ciI6ImJPc2g3b1VCOTcyM1N3N1NQY2hRV1hCcUIzMWcxY1E3IiwiYWdlIjoxOH0.KGkZdQc_8mA6TaSeTMfk2xnVduCHojY9Oq2YtEAHNfA"
+  },
+  "kv" : [ {
+    "key" : "satoken:login:session:10001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566802,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\"},\"historyTerminalCount\":1,\"id\":\"satoken:login:session:10001\",\"loginId\":[\"java.lang.Long\",10001],\"loginType\":\"login\",\"terminalList\":[\"java.util.Vector\",[{\"@class\":\"cn.dev33.satoken.session.SaTerminalInfo\",\"createTime\":1791000566802,\"deviceId\":null,\"deviceType\":\"DEF\",\"extraData\":null,\"index\":1,\"tokenValue\":\"eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOjEwMDAxLCJyblN0ciI6ImJPc2g3b1VCOTcyM1N3N1NQY2hRV1hCcUIzMWcxY1E3IiwiYWdlIjoxOH0.KGkZdQc_8mA6TaSeTMfk2xnVduCHojY9Oq2YtEAHNfA\"}]],\"token\":null,\"type\":\"Account-Session\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:token:eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOjEwMDAxLCJyblN0ciI6ImJPc2g3b1VCOTcyM1N3N1NQY2hRV1hCcUIzMWcxY1E3IiwiYWdlIjoxOH0.KGkZdQc_8mA6TaSeTMfk2xnVduCHojY9Oq2YtEAHNfA",
+    "value" : "10001",
+    "ttl" : -1
+  } ]
+}

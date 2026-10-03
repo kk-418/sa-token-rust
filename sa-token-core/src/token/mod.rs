@@ -13,8 +13,8 @@ pub mod jwt;
 pub mod map;
 pub mod validator;
 
-pub(crate) use csprng::random_hex;
-pub use generator::{TokenGenerator, generate_unique};
+pub(crate) use csprng::{random_alnum, random_hex};
+pub use generator::{TokenGenContext, TokenGenerator, generate_unique};
 pub use jwt::{JwtAlgorithm, JwtClaims, JwtManager};
 pub use validator::TokenValidator;
 
@@ -75,6 +75,11 @@ impl std::fmt::Display for TokenValue {
 
 /// 默认账号体系字符串只 intern 一次。这是 OnceLock 的正确用途（常量），不是替代 Arc。
 /// Intern the default login-type string once. A legitimate OnceLock use (a constant), not an Arc replacement.
+///
+/// Native semantics: `""` / `"default"` / `"login"` intern as `"default"`.
+/// Java layout maps `"default"` back to `SaKeys.default_login_type` when building keys.
+/// 原生语义：`""` / `"default"` / `"login"` intern 为 `"default"`。
+/// Java 布局在构造键时把 `"default"` 再映射回 `SaKeys.default_login_type`。
 pub fn intern_login_type(s: &str) -> Arc<str> {
     if s.is_empty() || s == crate::keys::LOGIN_TYPE_DEFAULT || s == "login" {
         static DEFAULT: OnceLock<Arc<str>> = OnceLock::new();

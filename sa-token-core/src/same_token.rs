@@ -8,7 +8,9 @@
 
 use std::time::Duration;
 
+use crate::compat::SameTokenPastTtl;
 use crate::error::{SaTokenError, SaTokenResult};
+use crate::manager::SaTokenManager;
 use crate::util::StpUtil;
 
 /// Default header name.
@@ -27,10 +29,27 @@ fn generate_token() -> SaTokenResult<String> {
     crate::token::random_hex(32)
 }
 
+/// Past-key TTL: full timeout, or remaining lifetime of the current token.
+/// past 键 TTL：完整 timeout，或当前 token 的剩余寿命。
+async fn past_ttl(
+    manager: &SaTokenManager,
+    cur_key: &str,
+    full: Option<Duration>,
+) -> SaTokenResult<Option<Duration>> {
+    match manager.config.wire.same_token_past_ttl {
+        SameTokenPastTtl::Full => Ok(full),
+        SameTokenPastTtl::Remaining => manager.dao().ttl(cur_key).await,
+    }
+}
+
 /// Read current Same-Token without creating one.
 /// 读取当前 Same-Token（不自动创建）。
 pub async fn get_token_nh() -> SaTokenResult<Option<String>> {
     let manager = StpUtil::try_get_manager()?;
+    get_token_nh_on(manager).await
+}
+
+async fn get_token_nh_on(manager: &SaTokenManager) -> SaTokenResult<Option<String>> {
     let key = manager.keys().same_token();
     manager.dao().get_string(&key).await
 }
@@ -39,6 +58,10 @@ pub async fn get_token_nh() -> SaTokenResult<Option<String>> {
 /// 读取宽限期内的上一次 Same-Token。
 pub async fn get_past_token_nh() -> SaTokenResult<Option<String>> {
     let manager = StpUtil::try_get_manager()?;
+    get_past_token_nh_on(manager).await
+}
+
+async fn get_past_token_nh_on(manager: &SaTokenManager) -> SaTokenResult<Option<String>> {
     let key = manager.keys().same_token_past();
     manager.dao().get_string(&key).await
 }
@@ -77,6 +100,10 @@ pub async fn is_valid(token: &str) -> SaTokenResult<bool> {
 /// 刷新：当前值写入 past，再用 CAS 写入新的当前值。
 pub async fn refresh_token() -> SaTokenResult<String> {
     let manager = StpUtil::try_get_manager()?;
+    refresh_token_on(manager).await
+}
+
+async fn refresh_token_on(manager: &SaTokenManager) -> SaTokenResult<String> {
     let timeout = manager.config.same_token_timeout;
     let ttl_opt = ttl(timeout);
     let dao = manager.dao();
@@ -84,10 +111,11 @@ pub async fn refresh_token() -> SaTokenResult<String> {
     let past_key = manager.keys().same_token_past();
 
     let current = dao.get_string(&cur_key).await?;
-    if let Some(ref cur) = current {
-        if !cur.is_empty() {
-            dao.set_string(&past_key, cur, ttl_opt).await?;
-        }
+    if let Some(ref cur) = current
+        && !cur.is_empty()
+    {
+        let past = past_ttl(manager, &cur_key, ttl_opt).await?;
+        dao.set_string(&past_key, cur, past).await?;
     }
 
     let next = generate_token()?;
@@ -121,4 +149,103 @@ pub async fn check_current_request() -> SaTokenResult<()> {
         .and_then(|ctx| ctx.auth_meta().same_token)
         .unwrap_or_default();
     check_token(&value).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::SaTokenConfig;
+    use sa_token_storage_memory::MemoryStorage;
+    use std::sync::Arc;
+    use std::time::Duration;
+
+    fn manager_with(past: SameTokenPastTtl, timeout: i64) -> SaTokenManager {
+        let mut cfg = SaTokenConfig::default();
+        cfg.same_token_timeout = timeout;
+        cfg.wire.same_token_past_ttl = past;
+        SaTokenManager::new(Arc::new(MemoryStorage::new()), cfg)
+    }
+
+    #[tokio::test]
+    async fn full_past_ttl_uses_complete_timeout() {
+        let mgr = manager_with(SameTokenPastTtl::Full, 86400);
+        let dao = mgr.dao();
+        let cur_key = mgr.keys().same_token();
+        dao.set_string(&cur_key, "old", Some(Duration::from_secs(10)))
+            .await
+            .unwrap();
+        refresh_token_on(&mgr).await.unwrap();
+        let past_ttl = dao
+            .ttl(&mgr.keys().same_token_past())
+            .await
+            .unwrap()
+            .expect("past ttl");
+        assert!(
+            past_ttl.as_secs() > 100,
+            "Full must copy the configured timeout, got {}",
+            past_ttl.as_secs()
+        );
+    }
+
+    #[tokio::test]
+    async fn remaining_past_ttl_uses_current_remaining() {
+        let mgr = manager_with(SameTokenPastTtl::Remaining, 86400);
+        let dao = mgr.dao();
+        let cur_key = mgr.keys().same_token();
+        dao.set_string(&cur_key, "old", Some(Duration::from_secs(10)))
+            .await
+            .unwrap();
+        refresh_token_on(&mgr).await.unwrap();
+        let past_ttl = dao
+            .ttl(&mgr.keys().same_token_past())
+            .await
+            .unwrap()
+            .expect("past ttl");
+        assert!(
+            past_ttl.as_secs() <= 10,
+            "Remaining must copy leftover lifetime, got {}",
+            past_ttl.as_secs()
+        );
+        assert_eq!(
+            dao.get_string(&mgr.keys().same_token_past())
+                .await
+                .unwrap()
+                .as_deref(),
+            Some("old")
+        );
+    }
+
+    #[tokio::test]
+    async fn java_keys_are_var_same_token_and_past_same_token() {
+        let mut cfg = SaTokenConfig::java_compatible();
+        cfg.same_token_timeout = -1;
+        let mgr = SaTokenManager::new(Arc::new(MemoryStorage::new()), cfg);
+        assert_eq!(mgr.keys().same_token(), "satoken:var:same-token");
+        assert_eq!(mgr.keys().same_token_past(), "satoken:var:past-same-token");
+        let first = refresh_token_on(&mgr).await.unwrap();
+        let second = refresh_token_on(&mgr).await.unwrap();
+        assert_ne!(first, second);
+        assert_eq!(
+            get_past_token_nh_on(&mgr).await.unwrap().as_deref(),
+            Some(first.as_str())
+        );
+        assert_eq!(
+            get_token_nh_on(&mgr).await.unwrap().as_deref(),
+            Some(second.as_str())
+        );
+        assert!(
+            mgr.dao()
+                .ttl(&mgr.keys().same_token())
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            mgr.dao()
+                .ttl(&mgr.keys().same_token_past())
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
 }

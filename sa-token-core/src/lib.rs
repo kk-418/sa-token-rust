@@ -24,6 +24,7 @@ pub mod api_key;
 pub mod application;
 pub mod cleanup;
 pub mod codec;
+pub mod compat;
 pub mod config;
 pub mod context;
 pub mod dao;
@@ -63,6 +64,11 @@ pub mod ws;
 pub mod error;
 mod manager;
 
+pub use compat::{
+    AccountIndex, ApiKeyFormat, ApplicationValue, JwtClaimsFormat, LastActiveStore, LoginIdJson,
+    SameTokenPastTtl, SessionFormat, SignAlgorithm, SignNonceFormat, TempTokenFormat,
+    TokenValueFormat, WireCodec, WireConfig,
+};
 pub use config::{
     GrantWritePolicy, LogoutMode, LogoutRange, PermissionMatchMode, ReplacedLoginExitMode,
     ReplacedRange, SaTokenConfig, TokenCookieConfig,

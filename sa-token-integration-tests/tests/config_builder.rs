@@ -82,14 +82,21 @@ async fn test_all_token_styles_login_valid() {
         TokenStyle::Random128,
         TokenStyle::Jwt,
         TokenStyle::JwtStateless,
+        TokenStyle::JwtMixin,
         TokenStyle::Hash,
         TokenStyle::Timestamp,
         TokenStyle::Tik,
     ];
     for style in &styles {
         let mut builder = SaTokenConfig::builder().token_style(*style).timeout(3600);
-        if matches!(style, TokenStyle::Jwt | TokenStyle::JwtStateless) {
+        if matches!(
+            style,
+            TokenStyle::Jwt | TokenStyle::JwtStateless | TokenStyle::JwtMixin
+        ) {
             builder = builder.jwt_secret_key("test-secret-for-style");
+        }
+        if matches!(style, TokenStyle::JwtMixin) {
+            builder = builder.wire_last_active(sa_token_core::LastActiveStore::SeparateKey);
         }
         let config = builder.build_config();
         assert_eq!(

@@ -53,6 +53,7 @@
 //!   键构造使用 `String::with_capacity` + `write!` — 每个键**一次**分配。
 
 use std::fmt::Write as _;
+use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 use crate::config::SaTokenConfig;
@@ -109,6 +110,14 @@ pub enum KeyError {
         /// The API that was called | 被调用的 API 名
         api: &'static str,
     },
+
+    /// `login_id` contains `:` while `allow_login_id_colon` is false
+    /// `allow_login_id_colon=false` 时 `login_id` 含 `:`
+    LoginIdContainsColon,
+
+    /// `login_id` is a reserved marker (`-1`…`-5`)
+    /// `login_id` 为保留标记（`-1`…`-5`）
+    ReservedLoginIdMarker,
 }
 
 impl std::fmt::Display for KeyError {
@@ -123,6 +132,13 @@ impl std::fmt::Display for KeyError {
                 f,
                 "{api} requires SaKeyLayout::ThreeSegment; use the (login_type, login_id) variant instead"
             ),
+            Self::LoginIdContainsColon => write!(
+                f,
+                "login_id must not contain ':' when allow_login_id_colon is false"
+            ),
+            Self::ReservedLoginIdMarker => {
+                write!(f, "login_id must not be a reserved marker (-1..-5)")
+            }
         }
     }
 }
@@ -146,9 +162,27 @@ impl LoginId {
     /// Wraps a raw account id, rejecting empty / over-long values (A3-16)
     /// 包装裸账号 id，拒绝空值/超长值（A3-16）
     pub fn try_new(id: impl Into<String>) -> Result<Self, KeyError> {
+        Self::try_new_with(id, true)
+    }
+
+    /// Wraps a raw account id, optionally rejecting `:`.
+    /// 包装裸账号 id，可拒绝包含 `:`。
+    pub fn try_new_with(id: impl Into<String>, allow_colon: bool) -> Result<Self, KeyError> {
         let id = id.into();
         SaKeys::validate_login_id(&id)?;
+        if !allow_colon && id.contains(':') {
+            return Err(KeyError::LoginIdContainsColon);
+        }
         Ok(Self(id))
+    }
+
+    /// Reject Java reserved token markers used as a login id (`-1`…`-5`).
+    /// 拒绝把 Java 保留标记（`-1`…`-5`）当作 login id。
+    pub fn reject_reserved_markers(&self) -> Result<(), KeyError> {
+        match self.0.as_str() {
+            "-1" | "-2" | "-3" | "-4" | "-5" => Err(KeyError::ReservedLoginIdMarker),
+            _ => Ok(()),
+        }
     }
 
     /// Borrows the underlying raw id | 借用底层裸 id
@@ -192,41 +226,86 @@ impl From<String> for LoginId {
 }
 
 /// An **already-namespaced** account identifier | **已命名空间化**的账号标识符
-#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
-#[repr(transparent)]
-pub struct AccountNs(String);
+///
+/// `PartialEq` / `Eq` / `Hash` compare only `ns` so existing maps stay valid.
+/// `PartialEq` / `Eq` / `Hash` 只按 `ns` 比较，存量 map 语义不变。
+#[derive(Debug, Clone)]
+pub struct AccountNs {
+    ns: String,
+    /// `(login_type, login_id)` when built via [`SaKeys::account_ns`].
+    /// 由 [`SaKeys::account_ns`] 构造时填充 `(login_type, login_id)`。
+    parts: Option<(String, String)>,
+}
 
 impl AccountNs {
     /// Wraps a value that is **known** to be already namespaced
     /// 包装一个**已知**已命名空间化的值
     #[inline]
     pub fn from_trusted(ns: impl Into<String>) -> Self {
-        Self(ns.into())
+        Self {
+            ns: ns.into(),
+            parts: None,
+        }
     }
 
     /// Borrows the underlying namespaced id | 借用底层已命名空间化的 id
     #[inline]
     pub fn as_str(&self) -> &str {
-        &self.0
+        &self.ns
     }
 
     /// Unwraps into the owned `String` | 解包为拥有所有权的 `String`
     #[inline]
     pub fn into_inner(self) -> String {
-        self.0
+        self.ns
+    }
+
+    /// Structured `(login_type, login_id)` when known.
+    /// 已知时返回结构化 `(login_type, login_id)`。
+    #[inline]
+    pub fn parts(&self) -> Option<(&str, &str)> {
+        self.parts
+            .as_ref()
+            .map(|(lt, id)| (lt.as_str(), id.as_str()))
+    }
+}
+
+impl PartialEq for AccountNs {
+    fn eq(&self, other: &Self) -> bool {
+        self.ns == other.ns
+    }
+}
+
+impl Eq for AccountNs {}
+
+impl Hash for AccountNs {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.ns.hash(state);
+    }
+}
+
+impl PartialOrd for AccountNs {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for AccountNs {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.ns.cmp(&other.ns)
     }
 }
 
 impl std::fmt::Display for AccountNs {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(&self.0)
+        f.write_str(&self.ns)
     }
 }
 
 impl AsRef<str> for AccountNs {
     #[inline]
     fn as_ref(&self) -> &str {
-        &self.0
+        &self.ns
     }
 }
 
@@ -262,6 +341,9 @@ pub struct SaKeys {
     /// ThreeSegment 下 `"{root}token:"`，避免 scan 解析重复分配。
     /// Cached `"{root}token:"` for ThreeSegment scan parsing.
     token_colon: Arc<str>,
+    /// Default login type for omitted / `"default"` / `"login"` on Java layout.
+    /// Java 布局下省略 / `"default"` / `"login"` 映射到的默认账号体系。
+    default_login_type: Arc<str>,
 }
 
 impl SaKeys {
@@ -274,6 +356,7 @@ impl SaKeys {
             root,
             layout: SaKeyLayout::ThreeSegment,
             token_colon,
+            default_login_type: Arc::from(LOGIN_TYPE_DEFAULT),
         }
     }
 
@@ -284,23 +367,30 @@ impl SaKeys {
             SaKeyLayout::JavaFourSegment => Arc::from(root.as_ref().trim_end_matches(':')),
         };
         let token_colon = Arc::from(format!("{root}token:"));
+        let default_login_type: Arc<str> = match layout {
+            SaKeyLayout::ThreeSegment => Arc::from(LOGIN_TYPE_DEFAULT),
+            SaKeyLayout::JavaFourSegment => Arc::from(LOGIN_TYPE_LOGIN),
+        };
         Self {
             root,
             layout,
             token_colon,
+            default_login_type,
         }
     }
 
     /// Builds from config, honouring `key_layout` (A3-1) | 从配置构建，遵循 `key_layout`（A3-1）
     pub fn from_config(config: &SaTokenConfig) -> Self {
-        match config.key_layout {
+        let mut keys = match config.key_layout {
             SaKeyLayout::ThreeSegment => {
                 Self::with_layout(&config.storage_key_prefix, SaKeyLayout::ThreeSegment)
             }
             SaKeyLayout::JavaFourSegment => {
                 Self::with_layout(&config.token_name, SaKeyLayout::JavaFourSegment)
             }
-        }
+        };
+        keys.default_login_type = Arc::from(config.wire.default_login_type.as_str());
+        keys
     }
 
     /// Returns the key root | 返回键根
@@ -320,13 +410,37 @@ impl SaKeys {
         matches!(self.layout, SaKeyLayout::JavaFourSegment)
     }
 
+    /// Default login type used by this builder.
+    /// 本构造器使用的默认账号体系。
+    #[inline]
+    pub fn default_login_type(&self) -> &str {
+        &self.default_login_type
+    }
+
+    /// Java layout maps `""` / `"default"` / `"login"` to [`Self::default_login_type`].
+    /// Native `intern_login_type` still folds `"login"` into `"default"`; this maps it back.
+    /// Java 布局把 `""` / `"default"` / `"login"` 映射为 [`Self::default_login_type`]。
+    /// 原生 `intern_login_type` 仍把 `"login"` 归一为 `"default"`；此处再映射回去。
+    #[inline]
+    fn resolve_login_type<'a>(&'a self, login_type: &'a str) -> &'a str {
+        if self.is_java() && Self::is_default_login_type(login_type) {
+            self.default_login_type.as_ref()
+        } else {
+            login_type
+        }
+    }
+
     /// Normalizes `(login_type, login_id)` into a single key segment (A3-2, A3-16)
     /// 将 `(login_type, login_id)` 归一为单个键段（A3-2、A3-16）
     pub fn account_ns(login_type: &str, login_id: &LoginId) -> AccountNs {
         let id = login_id.as_str();
+        let parts = Some((login_type.to_string(), id.to_string()));
 
         if Self::is_default_login_type(login_type) {
-            return AccountNs(id.to_string());
+            return AccountNs {
+                ns: id.to_string(),
+                parts,
+            };
         }
 
         let needs_escape = id.contains(':');
@@ -344,7 +458,7 @@ impl SaKeys {
         } else {
             out.push_str(id);
         }
-        AccountNs(out)
+        AccountNs { ns: out, parts }
     }
 
     /// Returns `true` for login types normalized to the bare id
@@ -392,7 +506,9 @@ impl SaKeys {
                 out
             }
             SaKeyLayout::JavaFourSegment => {
-                let lt = login_type.unwrap_or(LOGIN_TYPE_LOGIN);
+                let lt = login_type
+                    .map(|t| self.resolve_login_type(t))
+                    .unwrap_or(self.default_login_type.as_ref());
                 let mut out = String::with_capacity(
                     self.root.len() + 1 + lt.len() + 1 + category.len() + 1 + id.len(),
                 );
@@ -435,11 +551,7 @@ impl SaKeys {
                 out
             }
             SaKeyLayout::JavaFourSegment => {
-                let lt = if login_type.is_empty() {
-                    LOGIN_TYPE_LOGIN
-                } else {
-                    login_type
-                };
+                let lt = self.resolve_login_type(login_type);
                 let mut out = String::with_capacity(
                     self.root.len() + 1 + lt.len() + 1 + category.len() + 1 + login_id.len(),
                 );
@@ -449,16 +561,34 @@ impl SaKeys {
         }
     }
 
+    /// Java keys that do **not** include `login_type`: `{tn}:{seg}:{seg}:...`.
+    /// 不含 login_type 的 Java 根键：`{tn}:{seg}:{seg}:...`。
+    fn build_root(&self, segments: &[&str]) -> String {
+        let extra: usize = segments.iter().map(|s| s.len() + 1).sum();
+        let mut out = String::with_capacity(self.root.len() + extra);
+        out.push_str(&self.root);
+        for seg in segments {
+            out.push(':');
+            out.push_str(seg);
+        }
+        out
+    }
+
     fn build_from_ns(
         &self,
         category: &str,
         ns: &AccountNs,
         api: &'static str,
     ) -> Result<String, KeyError> {
-        if self.is_java() {
-            return Err(KeyError::NamespacedIdUnsupportedByLayout { api });
+        match self.layout {
+            SaKeyLayout::ThreeSegment => Ok(self.build_global(category, ns.as_str(), None)),
+            SaKeyLayout::JavaFourSegment => match ns.parts() {
+                Some((login_type, login_id)) => {
+                    Ok(self.build_account(category, login_type, login_id))
+                }
+                None => Err(KeyError::NamespacedIdUnsupportedByLayout { api }),
+            },
         }
-        Ok(self.build_global(category, ns.as_str(), None))
     }
 
     /// Deprecated escape hatch kept for legacy call sites (A3-10)
@@ -570,11 +700,7 @@ impl SaKeys {
                 out
             }
             SaKeyLayout::JavaFourSegment => {
-                let lt = if login_type.is_empty() {
-                    LOGIN_TYPE_LOGIN
-                } else {
-                    login_type
-                };
+                let lt = self.resolve_login_type(login_type);
                 let mut out = String::with_capacity(
                     self.root.len() + 1 + lt.len() + 9 + service.len() + 1 + login_id.len(),
                 );
@@ -586,15 +712,20 @@ impl SaKeys {
 
     /// Ban key from an already-namespaced id (A3-2) | 从已命名空间化 id 构造封禁键（A3-2）
     pub fn disable_by_ns(&self, ns: &AccountNs, service: &str) -> Result<String, KeyError> {
-        if self.is_java() {
-            return Err(KeyError::NamespacedIdUnsupportedByLayout {
-                api: "SaKeys::disable_by_ns",
-            });
+        match self.layout {
+            SaKeyLayout::ThreeSegment => {
+                let mut out = self.build_global("disable", ns.as_str(), None);
+                out.push(':');
+                out.push_str(service);
+                Ok(out)
+            }
+            SaKeyLayout::JavaFourSegment => match ns.parts() {
+                Some((login_type, login_id)) => Ok(self.disable(login_type, login_id, service)),
+                None => Err(KeyError::NamespacedIdUnsupportedByLayout {
+                    api: "SaKeys::disable_by_ns",
+                }),
+            },
         }
-        let mut out = self.build_global("disable", ns.as_str(), None);
-        out.push(':');
-        out.push_str(service);
-        Ok(out)
     }
 
     /// Second-factor (safe) verification key | 二级认证键
@@ -612,11 +743,7 @@ impl SaKeys {
                 out
             }
             SaKeyLayout::JavaFourSegment => {
-                let lt = if login_type.is_empty() {
-                    LOGIN_TYPE_LOGIN
-                } else {
-                    login_type
-                };
+                let lt = self.resolve_login_type(login_type);
                 let mut out = String::with_capacity(
                     self.root.len() + 1 + lt.len() + 6 + service.len() + 1 + token.len(),
                 );
@@ -756,30 +883,47 @@ impl SaKeys {
     /// 当前 Same-Token 存储键。
     #[inline]
     pub fn same_token(&self) -> String {
-        self.build_global("var", "same-token", None)
+        match self.layout {
+            SaKeyLayout::ThreeSegment => self.build_global("var", "same-token", None),
+            SaKeyLayout::JavaFourSegment => self.build_root(&["var", "same-token"]),
+        }
     }
 
     /// Previous Same-Token storage key (grace window).
     /// 上一次 Same-Token 存储键（宽限期）。
+    ///
+    /// ThreeSegment keeps `same-token-past`; Java uses `past-same-token`.
+    /// 三段式保持 `same-token-past`；Java 使用 `past-same-token`。
     #[inline]
     pub fn same_token_past(&self) -> String {
-        self.build_global("var", "same-token-past", None)
+        match self.layout {
+            SaKeyLayout::ThreeSegment => self.build_global("var", "same-token-past", None),
+            SaKeyLayout::JavaFourSegment => self.build_root(&["var", "past-same-token"]),
+        }
     }
 
     /// Request-sign nonce occupancy key (not the login nonce space).
     /// 请求签名 nonce 占位键（与登录 nonce 键空间分离）。
     #[inline]
     pub fn sign_nonce(&self, nonce: &str) -> String {
-        self.build_global("sign-nonce", nonce, None)
+        match self.layout {
+            SaKeyLayout::ThreeSegment => self.build_global("sign-nonce", nonce, None),
+            SaKeyLayout::JavaFourSegment => self.build_root(&["sign", "nonce", nonce]),
+        }
     }
 
     /// Temp-token body key.
     /// 临时令牌体键。
     #[inline]
     pub fn temp_token(&self, namespace: &str, token: &str) -> String {
-        let mut cat = String::from("temp-token:");
-        cat.push_str(namespace);
-        self.build_global(&cat, token, None)
+        match self.layout {
+            SaKeyLayout::ThreeSegment => {
+                let mut cat = String::from("temp-token:");
+                cat.push_str(namespace);
+                self.build_global(&cat, token, None)
+            }
+            SaKeyLayout::JavaFourSegment => self.build_root(&[namespace, token]),
+        }
     }
 
     /// Temp-token reverse index (digest of the string value).
@@ -795,14 +939,44 @@ impl SaKeys {
     /// Raw Session 键：ThreeSegment `{root}raw-session:{type}:{id}`。
     #[inline]
     pub fn raw_session(&self, session_type: &str, value_id: &str) -> String {
-        self.build_global("raw-session", &format!("{session_type}:{value_id}"), None)
+        match self.layout {
+            SaKeyLayout::ThreeSegment => {
+                self.build_global("raw-session", &format!("{session_type}:{value_id}"), None)
+            }
+            SaKeyLayout::JavaFourSegment => {
+                self.build_root(&["raw-session", session_type, value_id])
+            }
+        }
     }
 
     /// Application-scope variable key (Java `SaApplication`).
     /// 应用全局变量键：`{root}var:{key}`。
     #[inline]
     pub fn application_var(&self, key: &str) -> String {
-        self.build_global("var", key, None)
+        match self.layout {
+            SaKeyLayout::ThreeSegment => self.build_global("var", key, None),
+            SaKeyLayout::JavaFourSegment => self.build_root(&["var", key]),
+        }
+    }
+
+    /// API-key body key. ThreeSegment `{root}{ns}:{token}`; Java `{tn}:{ns}:{token}`.
+    /// API Key 体键。三段式 `{root}{ns}:{token}`；Java `{tn}:{ns}:{token}`。
+    #[inline]
+    pub fn api_key(&self, namespace: &str, token: &str) -> String {
+        match self.layout {
+            SaKeyLayout::ThreeSegment => self.build_global(namespace, token, None),
+            SaKeyLayout::JavaFourSegment => self.build_root(&[namespace, token]),
+        }
+    }
+
+    /// Custom Session key (Java `SaSessionCustomUtil`).
+    /// 自定义 Session 键（Java `SaSessionCustomUtil`）。
+    #[inline]
+    pub fn custom_session(&self, id: &str) -> String {
+        match self.layout {
+            SaKeyLayout::ThreeSegment => self.build_global("custom:session", id, None),
+            SaKeyLayout::JavaFourSegment => self.build_root(&["custom", "session", id]),
+        }
     }
 
     // ==================== Scan & Parse (A3-11, A3-12) | 扫描与解析（A3-11、A3-12） ====================
@@ -819,7 +993,9 @@ impl SaKeys {
                 out
             }
             SaKeyLayout::JavaFourSegment => {
-                let lt = login_type.unwrap_or(LOGIN_TYPE_LOGIN);
+                let lt = login_type
+                    .map(|t| self.resolve_login_type(t))
+                    .unwrap_or(self.default_login_type.as_ref());
                 let mut out =
                     String::with_capacity(self.root.len() + 1 + lt.len() + 1 + category.len() + 1);
                 let _ = write!(out, "{}:{}:{}:", self.root, lt, category);
@@ -1072,5 +1248,94 @@ mod tests {
         );
         assert_eq!(keys.raw_session("role", "1001"), "sa:raw-session:role:1001");
         assert_eq!(keys.application_var("foo"), "sa:var:foo");
+    }
+
+    #[test]
+    fn three_segment_root_keys_bytes_unchanged() {
+        let keys = SaKeys::new("sa:");
+        assert_eq!(keys.same_token(), "sa:var:same-token");
+        assert_eq!(keys.same_token_past(), "sa:var:same-token-past");
+        assert_eq!(keys.sign_nonce("n1"), "sa:sign-nonce:n1");
+        assert_eq!(
+            keys.temp_token("temp-token", "t1"),
+            "sa:temp-token:temp-token:t1"
+        );
+        assert_eq!(keys.raw_session("role", "1001"), "sa:raw-session:role:1001");
+        assert_eq!(keys.application_var("foo"), "sa:var:foo");
+        assert_eq!(keys.custom_session("c1"), "sa:custom:session:c1");
+        assert_eq!(keys.api_key("apikey", "AK-1"), "sa:apikey:AK-1");
+    }
+
+    #[test]
+    fn java_session_by_ns_uses_parts() {
+        let keys = SaKeys::with_layout("satoken", SaKeyLayout::JavaFourSegment);
+        let ns = SaKeys::account_ns("admin", &id("u1"));
+        assert_eq!(keys.session_by_ns(&ns).unwrap(), "satoken:admin:session:u1");
+    }
+
+    #[test]
+    fn java_default_type_token_info() {
+        let keys = SaKeys::with_layout("satoken", SaKeyLayout::JavaFourSegment);
+        assert_eq!(keys.token_info("abc"), "satoken:login:token:abc");
+        assert_eq!(
+            keys.token_info_with_type("default", "abc"),
+            "satoken:login:token:abc"
+        );
+        assert_eq!(
+            keys.token_info_with_type("login", "abc"),
+            "satoken:login:token:abc"
+        );
+    }
+
+    #[test]
+    fn java_root_keys() {
+        let keys = SaKeys::with_layout("satoken", SaKeyLayout::JavaFourSegment);
+        assert_eq!(keys.same_token(), "satoken:var:same-token");
+        assert_eq!(keys.same_token_past(), "satoken:var:past-same-token");
+        assert_eq!(keys.sign_nonce("n1"), "satoken:sign:nonce:n1");
+        assert_eq!(keys.temp_token("temp-token", "t1"), "satoken:temp-token:t1");
+        assert_eq!(
+            keys.raw_session("role", "1001"),
+            "satoken:raw-session:role:1001"
+        );
+        assert_eq!(keys.application_var("foo"), "satoken:var:foo");
+        assert_eq!(keys.custom_session("c1"), "satoken:custom:session:c1");
+        assert_eq!(keys.api_key("apikey", "AK-1"), "satoken:apikey:AK-1");
+    }
+
+    #[test]
+    fn from_config_java_compatible_uses_token_name_root() {
+        let config = SaTokenConfig::java_compatible();
+        let keys = SaKeys::from_config(&config);
+        assert_eq!(keys.prefix(), "satoken");
+        assert_eq!(keys.default_login_type(), "login");
+        assert_eq!(keys.token_info("abc"), "satoken:login:token:abc");
+        assert_eq!(keys.same_token(), "satoken:var:same-token");
+    }
+
+    #[test]
+    fn login_id_colon_and_reserved_markers() {
+        assert!(LoginId::try_new("a:b").is_ok());
+        assert!(LoginId::try_new_with("a:b", true).is_ok());
+        assert_eq!(
+            LoginId::try_new_with("a:b", false).unwrap_err(),
+            KeyError::LoginIdContainsColon
+        );
+        assert!(LoginId::new("ok").reject_reserved_markers().is_ok());
+        for marker in ["-1", "-2", "-3", "-4", "-5"] {
+            assert_eq!(
+                LoginId::new(marker).reject_reserved_markers().unwrap_err(),
+                KeyError::ReservedLoginIdMarker
+            );
+        }
+    }
+
+    #[test]
+    fn account_ns_eq_ignores_parts() {
+        let a = SaKeys::account_ns("admin", &id("u1"));
+        let b = AccountNs::from_trusted("admin:u1");
+        assert_eq!(a, b);
+        assert!(a.parts().is_some());
+        assert!(b.parts().is_none());
     }
 }

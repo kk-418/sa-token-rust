@@ -1,0 +1,32 @@
+{
+  "scenario" : "login_long",
+  "notes" : "StpUtil.login(10001L); token 值是 String.valueOf(loginId)=10001；Account-Session 为 jackson3 NON_FINAL 类型化 JSON。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001,
+    "device" : "DEF"
+  },
+  "tokens" : {
+    "token" : "8aa19928-161c-4cae-b851-0d48a98e682c"
+  },
+  "kv" : [ {
+    "key" : "satoken:login:session:10001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566692,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\"},\"historyTerminalCount\":1,\"id\":\"satoken:login:session:10001\",\"loginId\":[\"java.lang.Long\",10001],\"loginType\":\"login\",\"terminalList\":[\"java.util.Vector\",[{\"@class\":\"cn.dev33.satoken.session.SaTerminalInfo\",\"createTime\":1791000566713,\"deviceId\":null,\"deviceType\":\"DEF\",\"extraData\":null,\"index\":1,\"tokenValue\":\"8aa19928-161c-4cae-b851-0d48a98e682c\"}]],\"token\":null,\"type\":\"Account-Session\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:token:8aa19928-161c-4cae-b851-0d48a98e682c",
+    "value" : "10001",
+    "ttl" : -1
+  } ]
+}

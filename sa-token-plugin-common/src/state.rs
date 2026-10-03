@@ -12,7 +12,11 @@ use sa_token_adapter::storage::SaStorage;
 use sa_token_core::config::TokenStyle;
 use sa_token_core::event::{SaTokenEventBus, SaTokenListener};
 use sa_token_core::keys::SaKeyLayout;
-use sa_token_core::{SaTokenConfig, SaTokenManager};
+use sa_token_core::{
+    AccountIndex, ApiKeyFormat, ApplicationValue, JwtClaimsFormat, LastActiveStore, LoginIdJson,
+    SaTokenConfig, SaTokenManager, SameTokenPastTtl, SessionFormat, SignAlgorithm, SignNonceFormat,
+    TempTokenFormat, TokenValueFormat, WireConfig,
+};
 
 /// Shared application state for all framework plugins.
 ///
@@ -398,6 +402,140 @@ impl SaTokenStateBuilder {
     /// Timestamp window in seconds for `RequestSign`.
     pub fn sign_window_secs(mut self, secs: i64) -> Self {
         self.config_builder = self.config_builder.sign_window_secs(secs);
+        self
+    }
+
+    // ── wire / Java compatibility ───────────────────────────────────
+
+    /// Apply the Java Sa-Token v1.46.0 preset; later setters may override fields.
+    pub fn java_compatible(mut self) -> Self {
+        self.config_builder = self.config_builder.java_compatible();
+        self
+    }
+
+    /// Replace the entire [`WireConfig`].
+    pub fn wire(mut self, wire: WireConfig) -> Self {
+        self.config_builder = self.config_builder.wire(wire);
+        self
+    }
+
+    /// Default login type used when a type is omitted.
+    pub fn default_login_type(mut self, login_type: impl Into<String>) -> Self {
+        self.config_builder = self.config_builder.default_login_type(login_type);
+        self
+    }
+
+    /// Token-key value format.
+    pub fn wire_token_value(mut self, format: TokenValueFormat) -> Self {
+        self.config_builder = self.config_builder.wire_token_value(format);
+        self
+    }
+
+    /// Last-active storage.
+    pub fn wire_last_active(mut self, store: LastActiveStore) -> Self {
+        self.config_builder = self.config_builder.wire_last_active(store);
+        self
+    }
+
+    /// Account token index.
+    pub fn wire_account_index(mut self, index: AccountIndex) -> Self {
+        self.config_builder = self.config_builder.wire_account_index(index);
+        self
+    }
+
+    /// Session JSON format.
+    pub fn wire_session_format(mut self, format: SessionFormat) -> Self {
+        self.config_builder = self.config_builder.wire_session_format(format);
+        self
+    }
+
+    /// loginId JSON encoding.
+    pub fn wire_login_id_json(mut self, format: LoginIdJson) -> Self {
+        self.config_builder = self.config_builder.wire_login_id_json(format);
+        self
+    }
+
+    /// Whether `login_id` may contain `:`.
+    pub fn allow_login_id_colon(mut self, allow: bool) -> Self {
+        self.config_builder = self.config_builder.allow_login_id_colon(allow);
+        self
+    }
+
+    /// Default device type when login omits device.
+    pub fn default_device_type(mut self, device: impl Into<String>) -> Self {
+        self.config_builder = self.config_builder.default_device_type(device);
+        self
+    }
+
+    /// Secondary-auth occupancy value.
+    pub fn wire_safe_value(mut self, value: impl Into<String>) -> Self {
+        self.config_builder = self.config_builder.wire_safe_value(value);
+        self
+    }
+
+    /// Default secondary-auth service name.
+    pub fn default_safe_service(mut self, service: impl Into<String>) -> Self {
+        self.config_builder = self.config_builder.default_safe_service(service);
+        self
+    }
+
+    /// Default disable service name.
+    pub fn default_disable_service(mut self, service: impl Into<String>) -> Self {
+        self.config_builder = self.config_builder.default_disable_service(service);
+        self
+    }
+
+    /// Temp-token payload format.
+    pub fn wire_temp_token_format(mut self, format: TempTokenFormat) -> Self {
+        self.config_builder = self.config_builder.wire_temp_token_format(format);
+        self
+    }
+
+    /// Temp-token key namespace.
+    pub fn temp_token_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.config_builder = self.config_builder.temp_token_namespace(namespace);
+        self
+    }
+
+    /// API-key model format.
+    pub fn wire_api_key_format(mut self, format: ApiKeyFormat) -> Self {
+        self.config_builder = self.config_builder.wire_api_key_format(format);
+        self
+    }
+
+    /// API-key key namespace.
+    pub fn api_key_namespace(mut self, namespace: impl Into<String>) -> Self {
+        self.config_builder = self.config_builder.api_key_namespace(namespace);
+        self
+    }
+
+    /// Application / root-object format.
+    pub fn wire_application_value(mut self, format: ApplicationValue) -> Self {
+        self.config_builder = self.config_builder.wire_application_value(format);
+        self
+    }
+
+    /// JWT claims layout.
+    pub fn wire_jwt_claims(mut self, format: JwtClaimsFormat) -> Self {
+        self.config_builder = self.config_builder.wire_jwt_claims(format);
+        self
+    }
+
+    /// Sign nonce occupancy format.
+    pub fn wire_sign_nonce(mut self, format: SignNonceFormat) -> Self {
+        self.config_builder = self.config_builder.wire_sign_nonce(format);
+        self
+    }
+
+    /// Request-sign algorithm.
+    pub fn wire_sign_algorithm(mut self, algorithm: SignAlgorithm) -> Self {
+        self.config_builder = self.config_builder.wire_sign_algorithm(algorithm);
+        self
+    }
+
+    /// Same-Token past-key TTL.
+    pub fn wire_same_token_past_ttl(mut self, policy: SameTokenPastTtl) -> Self {
+        self.config_builder = self.config_builder.wire_same_token_past_ttl(policy);
         self
     }
 

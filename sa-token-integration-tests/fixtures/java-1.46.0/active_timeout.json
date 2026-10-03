@@ -1,0 +1,36 @@
+{
+  "scenario" : "active_timeout",
+  "notes" : "timeout=-1 + activeTimeout=1800 写 last-active，值是毫秒时间戳；ttl 随 token timeout 为 -1。last-active 值会变，Rust 只断言格式。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : 1800,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001,
+    "activeTimeout" : 1800
+  },
+  "tokens" : {
+    "token" : "333fad07-89d3-4fae-bb4b-e1ddba4a8a3f"
+  },
+  "kv" : [ {
+    "key" : "satoken:login:last-active:333fad07-89d3-4fae-bb4b-e1ddba4a8a3f",
+    "value" : "1791000566757",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:session:10001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566757,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\"},\"historyTerminalCount\":1,\"id\":\"satoken:login:session:10001\",\"loginId\":[\"java.lang.Long\",10001],\"loginType\":\"login\",\"terminalList\":[\"java.util.Vector\",[{\"@class\":\"cn.dev33.satoken.session.SaTerminalInfo\",\"createTime\":1791000566757,\"deviceId\":null,\"deviceType\":\"DEF\",\"extraData\":null,\"index\":1,\"tokenValue\":\"333fad07-89d3-4fae-bb4b-e1ddba4a8a3f\"}]],\"token\":null,\"type\":\"Account-Session\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:token:333fad07-89d3-4fae-bb4b-e1ddba4a8a3f",
+    "value" : "10001",
+    "ttl" : -1
+  } ]
+}

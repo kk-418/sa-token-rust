@@ -27,7 +27,8 @@ pub use serializer::{
 #[cfg(feature = "fory")]
 pub use serializer::{ForySerializer, ForySerializerConfig};
 pub use storage::{
-    SaStorage, ScanPage, StorageError, StorageResult, scan_all_keys, scan_all_keys_dedup,
+    SaStorage, ScanPage, StorageError, StorageResult, TtlState, ceil_subsecond_ttl, scan_all_keys,
+    scan_all_keys_dedup,
 };
 pub use utils::{
     build_cookie_string, extract_bearer_or_value, parse_cookies, parse_query_string,

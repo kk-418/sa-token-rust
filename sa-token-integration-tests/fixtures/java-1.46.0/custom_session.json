@@ -1,0 +1,27 @@
+{
+  "scenario" : "custom_session",
+  "notes" : "SaSessionCustomUtil.getSessionById(\"role-1001\")；key satoken:custom:session:role-1001，type=Custom-Session。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "sessionId" : "role-1001",
+    "dataKey" : "count",
+    "dataValue" : 1
+  },
+  "tokens" : { },
+  "kv" : [ {
+    "key" : "satoken:custom:session:role-1001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566759,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\",\"count\":1},\"historyTerminalCount\":0,\"id\":\"satoken:custom:session:role-1001\",\"loginId\":null,\"loginType\":null,\"terminalList\":[\"java.util.Vector\",[]],\"token\":null,\"type\":\"Custom-Session\"}",
+    "ttl" : -1
+  } ]
+}

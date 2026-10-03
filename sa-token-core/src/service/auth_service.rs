@@ -15,6 +15,7 @@ use std::time::Duration;
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 
+use crate::compat::{AccountIndex, LastActiveStore, TokenValueFormat};
 use crate::config::{
     LogoutMode, LogoutRange, ReplacedLoginExitMode, ReplacedRange, SaTokenConfig, TokenStyle,
 };
@@ -22,7 +23,7 @@ use crate::dao::SaTokenDao;
 use crate::distributed::DistributedSessionManager;
 use crate::error::{SaTokenError, SaTokenResult};
 use crate::event::{SaTokenEvent, SaTokenEventBus};
-use crate::keys::{AccountNs, LoginId, SaKeys};
+use crate::keys::{AccountNs, LOGIN_TYPE_DEFAULT, LoginId, SaKeys};
 use crate::nonce::NonceManager;
 use crate::online::OnlineManager;
 use crate::refresh::RefreshTokenManager;
@@ -30,7 +31,9 @@ use crate::repository::{SessionRepo, TokenIdMapping, TokenRepo};
 use crate::service::compensate::LoginCompensator;
 use crate::service::login_request::LoginRequest;
 use crate::session::SaTerminalInfo;
-use crate::token::{JwtAlgorithm, JwtManager, TokenGenerator, TokenInfo, TokenValue};
+use crate::token::{
+    JwtAlgorithm, JwtManager, TokenGenContext, TokenGenerator, TokenInfo, TokenValue,
+};
 
 /// 下线时解析出的账号身份 | Account identity resolved during logout
 struct LogoutIdentity {
@@ -93,15 +96,38 @@ impl AuthService {
     }
 
     /// 账号命名空间构造（统一校验入口）| Build the account namespace with validation
-    fn account_ns(login_type: &str, login_id: &str) -> SaTokenResult<AccountNs> {
-        let id =
-            LoginId::try_new(login_id).map_err(|e| SaTokenError::ConfigError(e.to_string()))?;
+    fn account_ns(&self, login_type: &str, login_id: &str) -> SaTokenResult<AccountNs> {
+        let id = LoginId::try_new_with(login_id, self.config.wire.allow_login_id_colon)
+            .map_err(|e| SaTokenError::ConfigError(e.to_string()))?;
+        if self.config.wire.token_value == TokenValueFormat::LoginId {
+            id.reject_reserved_markers()
+                .map_err(|e| SaTokenError::ConfigError(e.to_string()))?;
+        }
         Ok(SaKeys::account_ns(login_type, &id))
+    }
+
+    fn uses_session_terminals(&self) -> bool {
+        self.config.wire.account_index == AccountIndex::SessionTerminals
+    }
+
+    fn uses_java_write_order(&self) -> bool {
+        self.uses_session_terminals() || self.config.wire.token_value == TokenValueFormat::LoginId
+    }
+
+    /// Device for this login: request value, else `wire.default_device_type`.
+    fn login_device<'a>(&'a self, req: &'a LoginRequest) -> Option<&'a str> {
+        req.effective_device()
+            .or(self.config.wire.default_device_type.as_deref())
     }
 
     /// JWT Stateless 模式（Java `StpLogicJwtForStateless`）。
     fn is_jwt_stateless(&self) -> bool {
         matches!(self.config.token_style, TokenStyle::JwtStateless)
+    }
+
+    /// JWT Mixin 模式（Java `StpLogicJwtForMixin`）。
+    fn is_jwt_mixin(&self) -> bool {
+        matches!(self.config.token_style, TokenStyle::JwtMixin)
     }
 
     /// 踢人 / 按账号登出 / 顶号在 Stateless 下不可用。
@@ -113,6 +139,37 @@ impl AuthService {
         }
     }
 
+    /// 踢人 / 按账号登出 / 顶号 / 续期在 Mixin 下不可用。
+    fn reject_jwt_mixin(&self) -> SaTokenResult<()> {
+        if self.is_jwt_mixin() {
+            Err(SaTokenError::ApiDisabled("jwt-mixin".into()))
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Stateless 与 Mixin 共用的禁用 API。
+    fn reject_jwt_disabled_api(&self) -> SaTokenResult<()> {
+        self.reject_jwt_stateless()?;
+        self.reject_jwt_mixin()
+    }
+
+    /// JWT `loginType` claim：空 / default / login 映射到 `wire.default_login_type`。
+    fn jwt_claim_login_type<'a>(&'a self, login_type: &'a str) -> &'a str {
+        if login_type.is_empty()
+            || login_type == LOGIN_TYPE_DEFAULT
+            || login_type == crate::keys::LOGIN_TYPE_LOGIN
+        {
+            if self.config.wire.default_login_type.is_empty() {
+                "default"
+            } else {
+                self.config.wire.default_login_type.as_str()
+            }
+        } else {
+            login_type
+        }
+    }
+
     /// 按当前配置构造验签用 `JwtManager`。
     fn jwt_manager(&self) -> SaTokenResult<JwtManager> {
         let secret = self
@@ -121,9 +178,7 @@ impl AuthService {
             .as_deref()
             .filter(|s| !s.trim().is_empty())
             .ok_or_else(|| {
-                SaTokenError::ConfigError(
-                    "jwt_secret_key is required when token_style=JwtStateless".into(),
-                )
+                SaTokenError::ConfigError("jwt_secret_key is required for JWT token styles".into())
             })?;
         let algorithm = match self
             .config
@@ -152,7 +207,35 @@ impl AuthService {
     }
 
     /// 验签 JWT 并从 claims 合成 `TokenInfo`（不读 storage）。
-    fn token_info_from_jwt(&self, token: &TokenValue) -> SaTokenResult<TokenInfo> {
+    fn token_info_from_jwt(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+    ) -> SaTokenResult<TokenInfo> {
+        if self.config.wire.jwt_claims == crate::compat::JwtClaimsFormat::Java {
+            let mgr = self.jwt_manager()?;
+            let expected = self.jwt_claim_login_type(login_type);
+            let check_eff = matches!(
+                self.config.token_style,
+                TokenStyle::JwtStateless | TokenStyle::JwtMixin
+            );
+            let claims =
+                crate::compat::java_jwt::validate(&mgr, token.as_str(), expected, check_eff)?;
+            let mut info = TokenInfo::new(token.clone(), claims.login_id);
+            info.login_type = crate::token::intern_login_type(&claims.login_type);
+            info.device = claims.device_type;
+            if let Some(eff) = claims.eff {
+                if eff == crate::compat::java_jwt::NEVER_EXPIRE {
+                    info.expire_time = None;
+                } else if eff > 0 {
+                    info.expire_time = DateTime::<Utc>::from_timestamp_millis(eff);
+                }
+            }
+            if !claims.extra.is_empty() {
+                info.extra_data = Some(serde_json::Value::Object(claims.extra));
+            }
+            return Ok(info);
+        }
         let claims = self.jwt_manager()?.validate(token.as_str())?;
         let mut info = TokenInfo::new(token.clone(), claims.login_id);
         if let Some(exp) = claims.exp {
@@ -165,7 +248,7 @@ impl AuthService {
     pub async fn login(&self, req: LoginRequest) -> SaTokenResult<TokenValue> {
         let login_type = req.effective_login_type().to_string();
         let login_id = req.login_id.clone();
-        let ns = Self::account_ns(&login_type, &login_id)?;
+        let ns = self.account_ns(&login_type, &login_id)?;
 
         let mut compensator = LoginCompensator::new();
 
@@ -194,25 +277,17 @@ impl AuthService {
         }
 
         if !self.is_jwt_stateless()
+            && !self.is_jwt_mixin()
             && self.config.is_share
             && let Some(existing) = self
-                .token_repo
-                .get_login_mapping(&login_type, &login_id)
+                .find_share_token(&login_type, &login_id, &ns, &req)
                 .await?
         {
-            let existing_token = TokenValue::new(existing);
-            if self
-                .token_repo
-                .load_valid_token_info(&existing_token)
-                .await
-                .is_ok()
-            {
-                compensator.commit();
-                if self.config.is_log {
-                    tracing::info!(login_id = %login_id, "login success");
-                }
-                return Ok(existing_token);
+            compensator.commit();
+            if self.config.is_log {
+                tracing::info!(login_id = %login_id, "login success");
             }
+            return Ok(existing);
         }
 
         let mut token_info = self.build_token_info(&req, &login_type).await?;
@@ -293,7 +368,7 @@ impl AuthService {
         compensator.commit();
 
         if let Some(online) = &self.online_manager {
-            let device = req.effective_device().unwrap_or("unknown");
+            let device = self.login_device(&req).unwrap_or("unknown");
             let mut user = crate::online::OnlineUser::new(
                 login_id.clone(),
                 token.as_str().to_string(),
@@ -366,23 +441,38 @@ impl AuthService {
                 let extra = req.extra_data.clone();
                 let login_id = req.login_id.clone();
                 let cfg = self.config.clone();
-                let skip_store_check = self.is_jwt_stateless();
+                let skip_store_check = self.is_jwt_stateless() || self.is_jwt_mixin();
+                let mixin_ctx = TokenGenContext {
+                    login_id: login_id.clone(),
+                    login_type: self.jwt_claim_login_type(login_type).to_string(),
+                    device: self.login_device(req).map(str::to_string),
+                    timeout_secs: req.timeout_secs.unwrap_or(self.config.timeout),
+                    extra: extra.clone(),
+                };
+                let is_mixin = self.is_jwt_mixin();
                 crate::token::generate_unique(
                     cfg.max_try_times,
-                    || match extra.as_ref() {
-                        Some(extra) => {
-                            TokenGenerator::generate_with_login_id_and_extra(&cfg, &login_id, extra)
+                    || {
+                        if is_mixin {
+                            TokenGenerator::generate_for(&cfg, &mixin_ctx)
+                        } else {
+                            match extra.as_ref() {
+                                Some(extra) => TokenGenerator::generate_with_login_id_and_extra(
+                                    &cfg, &login_id, extra,
+                                ),
+                                None => TokenGenerator::generate_with_login_id(&cfg, &login_id),
+                            }
                         }
-                        None => TokenGenerator::generate_with_login_id(&cfg, &login_id),
                     },
                     |t| {
                         let repo = self.token_repo.clone();
                         let token = t.to_string();
+                        let lt = login_type.to_string();
                         async move {
                             if skip_store_check {
                                 Ok(false)
                             } else {
-                                Ok(repo.get_token_info(&token).await?.is_some())
+                                Ok(repo.get_token_info_typed(&lt, &token).await?.is_some())
                             }
                         }
                     },
@@ -416,6 +506,49 @@ impl AuthService {
         Ok(info)
     }
 
+    async fn find_share_token(
+        &self,
+        login_type: &str,
+        login_id: &str,
+        ns: &AccountNs,
+        req: &LoginRequest,
+    ) -> SaTokenResult<Option<TokenValue>> {
+        if self.uses_session_terminals() {
+            let device = self.login_device(req);
+            let tokens = self.session_repo.get_token_list(ns, device).await?;
+            for t in tokens.into_iter().rev() {
+                let tv = TokenValue::new(t);
+                if self
+                    .token_repo
+                    .load_valid_token_info_typed(login_type, &tv)
+                    .await
+                    .is_ok()
+                {
+                    return Ok(Some(tv));
+                }
+            }
+            return Ok(None);
+        }
+        let Some(existing) = self
+            .token_repo
+            .get_login_mapping(login_type, login_id)
+            .await?
+        else {
+            return Ok(None);
+        };
+        let existing_token = TokenValue::new(existing);
+        if self
+            .token_repo
+            .load_valid_token_info_typed(login_type, &existing_token)
+            .await
+            .is_ok()
+        {
+            Ok(Some(existing_token))
+        } else {
+            Ok(None)
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     async fn write_login_stages(
         &self,
@@ -428,6 +561,26 @@ impl AuthService {
         refresh_mgr: Option<&RefreshTokenManager>,
         compensator: &mut LoginCompensator,
     ) -> SaTokenResult<()> {
+        if self.is_jwt_mixin() {
+            return self
+                .write_login_stages_mixin(login_type, ns, req, token_info, compensator)
+                .await;
+        }
+
+        if self.uses_java_write_order() {
+            return self
+                .write_login_stages_java(
+                    login_type,
+                    login_id,
+                    ns,
+                    req,
+                    token_info,
+                    refresh_mgr,
+                    compensator,
+                )
+                .await;
+        }
+
         let token = token_info.token.as_str();
         let keys = self.dao.keys();
         let login_ttl = self.token_repo.ttl_for(token_info);
@@ -448,7 +601,7 @@ impl AuthService {
             None => compensator.on_fail_delete(session_key),
         }
         self.session_repo.update_min_timeout(ns, login_ttl).await?;
-        let mut terminal = SaTerminalInfo::new(token, req.effective_device().unwrap_or(""));
+        let mut terminal = SaTerminalInfo::new(token, self.login_device(req).unwrap_or(""));
         if let Some(extra) = req.extra_data.clone() {
             terminal = terminal.with_extra_data(extra);
         }
@@ -461,14 +614,16 @@ impl AuthService {
             .await?;
         compensator.on_fail_delete(keys.token_id_mapping(token));
 
-        self.token_repo.save_token_info(token_info).await?;
-        compensator.on_fail_delete(keys.token_info(token));
+        self.token_repo
+            .save_token_info_typed(login_type, token_info)
+            .await?;
+        compensator.on_fail_delete(keys.token_info_with_type(login_type, token));
 
         if self.config.right_now_create_token_session {
             self.session_repo
-                .create_token_session_with_ttl(&token_info.token, login_ttl)
+                .create_token_session_with_ttl_typed(login_type, &token_info.token, login_ttl)
                 .await?;
-            compensator.on_fail_delete(keys.token_session(token));
+            compensator.on_fail_delete(keys.token_session_with_type(login_type, token));
         }
 
         if let Some(mgr) = refresh_mgr
@@ -494,6 +649,183 @@ impl AuthService {
             compensator,
         )
         .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn write_login_stages_java(
+        &self,
+        login_type: &str,
+        login_id: &str,
+        ns: &AccountNs,
+        req: &LoginRequest,
+        token_info: &TokenInfo,
+        refresh_mgr: Option<&RefreshTokenManager>,
+        compensator: &mut LoginCompensator,
+    ) -> SaTokenResult<()> {
+        let token = token_info.token.as_str();
+        let keys = self.dao.keys();
+        let login_ttl = self.token_repo.ttl_for(token_info);
+
+        let session_key = keys
+            .session_by_ns(ns)
+            .map_err(|e| SaTokenError::ConfigError(e.to_string()))?;
+        match self.session_repo.snapshot_account_session(ns).await? {
+            Some(old_raw) => {
+                let remaining = self.dao.ttl(&session_key).await?;
+                compensator.on_fail_restore(session_key.clone(), old_raw, remaining);
+            }
+            None => compensator.on_fail_delete(session_key.clone()),
+        }
+        if !self.dao.exists(&session_key).await? {
+            let empty = self.session_repo.new_account_session(ns)?;
+            self.session_repo
+                .save_by_ns_with_ttl(ns, &empty, login_ttl)
+                .await?;
+        }
+        self.session_repo.update_min_timeout(ns, login_ttl).await?;
+
+        let mut terminal = SaTerminalInfo::new(token, self.login_device(req).unwrap_or(""));
+        if let Some(extra) = req.extra_data.clone() {
+            terminal = terminal.with_extra_data(extra);
+        }
+        self.session_repo
+            .add_terminal_with_ttl(ns, terminal, login_ttl)
+            .await?;
+
+        self.token_repo
+            .save_token_info_typed(login_type, token_info)
+            .await?;
+        compensator.on_fail_delete(keys.token_info_with_type(login_type, token));
+        if self.token_repo_last_active_enabled() {
+            compensator.on_fail_delete(keys.last_active_with_type(login_type, token));
+        }
+
+        if self.config.right_now_create_token_session {
+            self.session_repo
+                .create_token_session_with_ttl_typed(login_type, &token_info.token, login_ttl)
+                .await?;
+            compensator.on_fail_delete(keys.token_session_with_type(login_type, token));
+        }
+
+        if let Some(mgr) = refresh_mgr
+            && let Some(ref rt) = token_info.refresh_token
+        {
+            mgr.store_with_extra(
+                rt,
+                token,
+                login_type,
+                login_id,
+                token_info.extra_data.as_ref(),
+            )
+            .await?;
+            compensator.on_fail_delete(keys.refresh(rt));
+        }
+
+        Ok(())
+    }
+
+    /// Mixin：写 Account-Session + terminal，可选 last-active / token-session，不写 token key。
+    async fn write_login_stages_mixin(
+        &self,
+        login_type: &str,
+        ns: &AccountNs,
+        req: &LoginRequest,
+        token_info: &TokenInfo,
+        compensator: &mut LoginCompensator,
+    ) -> SaTokenResult<()> {
+        let token = token_info.token.as_str();
+        let keys = self.dao.keys();
+        let login_ttl = self.token_repo.ttl_for(token_info);
+
+        let session_key = keys
+            .session_by_ns(ns)
+            .map_err(|e| SaTokenError::ConfigError(e.to_string()))?;
+        match self.session_repo.snapshot_account_session(ns).await? {
+            Some(old_raw) => {
+                let remaining = self.dao.ttl(&session_key).await?;
+                compensator.on_fail_restore(session_key.clone(), old_raw, remaining);
+            }
+            None => compensator.on_fail_delete(session_key.clone()),
+        }
+        if !self.dao.exists(&session_key).await? {
+            let empty = self.session_repo.new_account_session(ns)?;
+            self.session_repo
+                .save_by_ns_with_ttl(ns, &empty, login_ttl)
+                .await?;
+        }
+        self.session_repo.update_min_timeout(ns, login_ttl).await?;
+
+        let mut terminal = SaTerminalInfo::new(token, self.login_device(req).unwrap_or(""));
+        if let Some(extra) = req.extra_data.clone() {
+            terminal = terminal.with_extra_data(extra);
+        }
+        self.session_repo
+            .add_terminal_with_ttl(ns, terminal, login_ttl)
+            .await?;
+
+        if self.token_repo_last_active_enabled() {
+            let la_key = keys.last_active_with_type(login_type, token);
+            let value = self.encode_last_active_value(token_info);
+            self.dao.set_string(&la_key, &value, login_ttl).await?;
+            compensator.on_fail_delete(la_key);
+        }
+
+        if self.config.right_now_create_token_session {
+            let ts_ttl = self.mixin_token_session_ttl(login_type, &token_info.token)?;
+            self.session_repo
+                .create_token_session_with_ttl_typed(login_type, &token_info.token, ts_ttl)
+                .await?;
+            compensator.on_fail_delete(keys.token_session_with_type(login_type, token));
+        }
+
+        Ok(())
+    }
+
+    fn encode_last_active_value(&self, info: &TokenInfo) -> String {
+        let ms = info.last_active_time.timestamp_millis();
+        if self.config.dynamic_active_timeout {
+            let secs = info
+                .active_timeout_override
+                .unwrap_or(self.config.active_timeout);
+            format!("{ms},{secs}")
+        } else {
+            ms.to_string()
+        }
+    }
+
+    fn parse_last_active_value(raw: &str) -> Option<(DateTime<Utc>, Option<i64>)> {
+        let (ms_raw, dyn_secs) = match raw.split_once(',') {
+            Some((ms, secs)) => (ms, secs.parse::<i64>().ok()),
+            None => (raw, None),
+        };
+        let ms = ms_raw.parse::<i64>().ok()?;
+        let at = DateTime::from_timestamp_millis(ms)?;
+        Some((at, dyn_secs))
+    }
+
+    /// Token-Session TTL from JWT `eff` (`-1` / missing → permanent).
+    fn mixin_token_session_ttl(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+    ) -> SaTokenResult<Option<Duration>> {
+        let info = self.token_info_from_jwt(login_type, token)?;
+        Ok(Self::ttl_from_expire_ms(info.expire_time))
+    }
+
+    fn ttl_from_expire_ms(expire: Option<DateTime<Utc>>) -> Option<Duration> {
+        let exp = expire?;
+        let ms = exp.signed_duration_since(Utc::now()).num_milliseconds();
+        if ms <= 0 {
+            Some(Duration::ZERO)
+        } else {
+            Some(Duration::from_millis(ms as u64))
+        }
+    }
+
+    fn token_repo_last_active_enabled(&self) -> bool {
+        self.config.wire.last_active == LastActiveStore::SeparateKey
+            && (self.config.active_timeout != -1 || self.config.dynamic_active_timeout)
     }
 
     async fn commit_login_mapping(
@@ -544,7 +876,7 @@ impl AuthService {
         req: &LoginRequest,
         new_token: &str,
     ) -> SaTokenResult<()> {
-        let device = req.effective_device();
+        let device = self.login_device(req);
         let effective_range = match (self.config.replaced_range, device) {
             (ReplacedRange::CurrDeviceType, None) => {
                 tracing::debug!(
@@ -567,15 +899,21 @@ impl AuthService {
                 }
             }
             ReplacedRange::AllDeviceType => {
-                for t in self.token_repo.list_tokens(login_type, login_id).await? {
-                    targets.insert(t);
-                }
-                if let Some(old) = self
-                    .token_repo
-                    .get_login_mapping(login_type, login_id)
-                    .await?
-                {
-                    targets.insert(old);
+                if self.uses_session_terminals() {
+                    for t in self.session_repo.get_token_list(ns, None).await? {
+                        targets.insert(t);
+                    }
+                } else {
+                    for t in self.token_repo.list_tokens(login_type, login_id).await? {
+                        targets.insert(t);
+                    }
+                    if let Some(old) = self
+                        .token_repo
+                        .get_login_mapping(login_type, login_id)
+                        .await?
+                    {
+                        targets.insert(old);
+                    }
                 }
             }
         }
@@ -601,7 +939,7 @@ impl AuthService {
 
     /// 登出（LOGOUT 模式）| Logout
     pub async fn logout(&self, token: &TokenValue, keep_token_session: bool) -> SaTokenResult<()> {
-        if self.is_jwt_stateless() {
+        if self.is_jwt_stateless() || self.is_jwt_mixin() {
             return Ok(());
         }
         let result = match self.config.logout_range {
@@ -609,7 +947,10 @@ impl AuthService {
                 self.logout_internal(token, LogoutMode::Logout, keep_token_session)
                     .await
             }
-            LogoutRange::Account => match self.resolve_logout_identity(token.as_str()).await? {
+            LogoutRange::Account => match self
+                .resolve_logout_identity(LOGIN_TYPE_DEFAULT, token.as_str())
+                .await?
+            {
                 Some(id) => self.logout_by_login_id(&id.login_type, &id.login_id).await,
                 None => {
                     self.logout_internal(token, LogoutMode::Logout, keep_token_session)
@@ -629,14 +970,14 @@ impl AuthService {
         token: &TokenValue,
         keep_token_session: bool,
     ) -> SaTokenResult<()> {
-        self.reject_jwt_stateless()?;
+        self.reject_jwt_disabled_api()?;
         self.logout_internal(token, LogoutMode::KickOut, keep_token_session)
             .await
     }
 
     /// 顶下线（REPLACED 模式，标记 -4）| Replace, marker `-4`
     pub async fn logout_replaced(&self, token: &TokenValue) -> SaTokenResult<()> {
-        self.reject_jwt_stateless()?;
+        self.reject_jwt_disabled_api()?;
         self.logout_internal(
             token,
             LogoutMode::Replaced,
@@ -645,8 +986,16 @@ impl AuthService {
         .await
     }
 
-    async fn resolve_logout_identity(&self, token: &str) -> SaTokenResult<Option<LogoutIdentity>> {
-        if let Some(info) = self.token_repo.get_token_info(token).await? {
+    async fn resolve_logout_identity(
+        &self,
+        login_type: &str,
+        token: &str,
+    ) -> SaTokenResult<Option<LogoutIdentity>> {
+        if let Some(info) = self
+            .token_repo
+            .get_token_info_typed(login_type, token)
+            .await?
+        {
             return Ok(Some(LogoutIdentity {
                 login_type: info.login_type.to_string(),
                 login_id: info.login_id.to_string(),
@@ -676,27 +1025,17 @@ impl AuthService {
         let token_str = token.as_str();
         tracing::debug!(mode = ?mode, token = %token_str, "logout_internal");
 
-        let identity = self.resolve_logout_identity(token_str).await?;
+        let identity = self
+            .resolve_logout_identity(LOGIN_TYPE_DEFAULT, token_str)
+            .await?;
+        let retire_lt = identity
+            .as_ref()
+            .map(|id| id.login_type.as_str())
+            .unwrap_or(LOGIN_TYPE_DEFAULT);
 
-        self.token_repo.delete_token_info(token_str).await?;
-
-        if !keep_token_session {
-            let _ = self.session_repo.delete_token_session(token).await;
-        }
-
-        match mode {
-            LogoutMode::Logout => self.token_repo.delete_token_id_mapping(token_str).await?,
-            LogoutMode::KickOut => {
-                self.token_repo
-                    .mark_token_id(token_str, self.token_repo.kick_out_marker())
-                    .await?
-            }
-            LogoutMode::Replaced => {
-                self.token_repo
-                    .mark_token_id(token_str, self.token_repo.replaced_marker())
-                    .await?
-            }
-        }
+        self.token_repo
+            .retire(retire_lt, token_str, mode, keep_token_session)
+            .await?;
 
         let Some(identity) = identity else {
             tracing::debug!(token = %token_str, "logout target has no resolvable identity, skipping account-level cleanup");
@@ -710,7 +1049,7 @@ impl AuthService {
             tracing::warn!(token = %token_str, error = %e, "failed to remove token from login index");
         }
 
-        if let Ok(ns) = Self::account_ns(lt, lid) {
+        if let Ok(ns) = self.account_ns(lt, lid) {
             let removed = self
                 .session_repo
                 .remove_terminal(&ns, token_str)
@@ -759,6 +1098,10 @@ impl AuthService {
         login_type: &str,
         login_id: &str,
     ) -> SaTokenResult<Vec<String>> {
+        if self.uses_session_terminals() {
+            let ns = self.account_ns(login_type, login_id)?;
+            return self.session_repo.get_token_list(&ns, None).await;
+        }
         let (alive, pruned) = self.token_repo.prune_index(login_type, login_id).await?;
         if pruned > 0 {
             tracing::debug!(pruned, login_id = %login_id, "pruned orphan index entries");
@@ -785,7 +1128,10 @@ impl AuthService {
                 let Some(token) = keys.parse_token_from_key(key, Some(login_type)) else {
                     continue;
                 };
-                if let Ok(Some(info)) = self.token_repo.get_token_info(token).await
+                if let Ok(Some(info)) = self
+                    .token_repo
+                    .get_token_info_typed(login_type, token)
+                    .await
                     && info.login_id.as_ref() == login_id
                     && info.login_type.as_ref() == login_type
                 {
@@ -816,7 +1162,7 @@ impl AuthService {
     /// Always uses per-token [`logout_internal`] so `logout_range=Account` cannot recurse.
     /// 始终按单 token 调用 [`logout_internal`]，避免 `logout_range=Account` 时递归。
     pub async fn logout_by_login_id(&self, login_type: &str, login_id: &str) -> SaTokenResult<()> {
-        self.reject_jwt_stateless()?;
+        self.reject_jwt_disabled_api()?;
         let tokens = self.collect_account_tokens(login_type, login_id).await?;
         let keep = self.config.is_logout_keep_token_session;
         for t in tokens {
@@ -832,7 +1178,7 @@ impl AuthService {
 
     /// 按账号踢下线全部 token（KICKOUT 模式）。
     pub async fn kick_out(&self, login_type: &str, login_id: &str) -> SaTokenResult<()> {
-        self.reject_jwt_stateless()?;
+        self.reject_jwt_disabled_api()?;
         if let Some(online) = &self.online_manager {
             let _ = online
                 .mark_offline_all_with_type(login_type, login_id)
@@ -855,7 +1201,7 @@ impl AuthService {
             }
         }
 
-        if let Ok(ns) = Self::account_ns(login_type, login_id) {
+        if let Ok(ns) = self.account_ns(login_type, login_id) {
             let _ = self.session_repo.delete_by_ns(&ns).await;
         }
         Ok(())
@@ -864,7 +1210,7 @@ impl AuthService {
     /// 按账号顶下线全部 token（REPLACED 模式）。不发 kick_out_notify。
     /// Replace every token of an account (`LogoutMode::Replaced`). No kick-out notify.
     pub async fn replaced(&self, login_type: &str, login_id: &str) -> SaTokenResult<()> {
-        self.reject_jwt_stateless()?;
+        self.reject_jwt_disabled_api()?;
         if let Some(online) = &self.online_manager {
             let _ = online
                 .mark_offline_all_with_type(login_type, login_id)
@@ -878,7 +1224,7 @@ impl AuthService {
             }
         }
 
-        if let Ok(ns) = Self::account_ns(login_type, login_id) {
+        if let Ok(ns) = self.account_ns(login_type, login_id) {
             let _ = self.session_repo.delete_by_ns(&ns).await;
         }
         Ok(())
@@ -886,10 +1232,27 @@ impl AuthService {
 
     /// 读取并校验 token（按策略自动续签）。
     pub async fn get_token_info(&self, token: &TokenValue) -> SaTokenResult<TokenInfo> {
+        self.get_token_info_typed(LOGIN_TYPE_DEFAULT, token).await
+    }
+
+    /// Read and validate a token under an explicit login type.
+    /// 按指定 login_type 读取并校验 token。
+    pub async fn get_token_info_typed(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+    ) -> SaTokenResult<TokenInfo> {
         if self.is_jwt_stateless() {
-            return self.token_info_from_jwt(token);
+            return self.token_info_from_jwt(login_type, token);
         }
-        match self.token_repo.load_valid_token_info(token).await {
+        if self.is_jwt_mixin() {
+            return self.get_token_info_jwt_mixin(login_type, token).await;
+        }
+        match self
+            .token_repo
+            .load_valid_token_info_typed(login_type, token)
+            .await
+        {
             Ok(info) => Ok(info),
             Err(SaTokenError::TokenExpired) => {
                 let _ = self
@@ -901,9 +1264,62 @@ impl AuthService {
         }
     }
 
+    /// Mixin：验签 JWT + Account-Session terminalList 含该 JWT，不读 token key。
+    async fn get_token_info_jwt_mixin(
+        &self,
+        login_type: &str,
+        token: &TokenValue,
+    ) -> SaTokenResult<TokenInfo> {
+        let mut info = self.token_info_from_jwt(login_type, token)?;
+        let ns = self.account_ns(info.login_type.as_ref(), info.login_id.as_ref())?;
+        if self
+            .session_repo
+            .get_terminal(&ns, token.as_str())
+            .await?
+            .is_none()
+        {
+            return Err(SaTokenError::TokenNotFound);
+        }
+
+        if self.token_repo_last_active_enabled() {
+            let la_key = self
+                .dao
+                .keys()
+                .last_active_with_type(login_type, token.as_str());
+            match self.dao.get_string(&la_key).await? {
+                Some(raw) => {
+                    if let Some((at, dyn_secs)) = Self::parse_last_active_value(&raw) {
+                        info.last_active_time = at;
+                        if let Some(secs) = dyn_secs {
+                            info.active_timeout_override = Some(secs);
+                        }
+                    }
+                }
+                None => return Err(SaTokenError::TokenInactive),
+            }
+            if info.is_freeze(info.effective_active_timeout(&self.config)) {
+                return Err(SaTokenError::TokenInactive);
+            }
+            if self.config.active_refresh {
+                info = self
+                    .token_repo
+                    .apply_active_refresh_typed(login_type, token.as_str(), info)
+                    .await?;
+            }
+        }
+
+        Ok(info)
+    }
+
     /// token 是否有效 | Whether the token is valid
     pub async fn is_valid(&self, token: &TokenValue) -> bool {
-        self.get_token_info(token).await.is_ok()
+        self.is_valid_typed(LOGIN_TYPE_DEFAULT, token).await
+    }
+
+    /// Whether the token is valid under an explicit login type.
+    /// 按指定 login_type 判断 token 是否有效。
+    pub async fn is_valid_typed(&self, login_type: &str, token: &TokenValue) -> bool {
+        self.get_token_info_typed(login_type, token).await.is_ok()
     }
 
     /// 手动续期到指定秒数（token 体、映射、Token-Session、账号 Session）。
@@ -913,7 +1329,12 @@ impl AuthService {
         token: &TokenValue,
         timeout_seconds: i64,
     ) -> SaTokenResult<()> {
-        let mut info = self.token_repo.load_token_info_no_renew(token).await?;
+        self.reject_jwt_disabled_api()?;
+        let mut info = self
+            .token_repo
+            .load_token_info_no_renew_typed(LOGIN_TYPE_DEFAULT, token)
+            .await?;
+        let login_type = info.login_type.to_string();
 
         info.update_active_time();
         let ttl = if timeout_seconds > 0 {
@@ -924,17 +1345,21 @@ impl AuthService {
             None
         };
 
-        self.token_repo.save_token_info(&info).await?;
+        self.token_repo
+            .save_token_info_typed(&login_type, &info)
+            .await?;
 
         let map_key = self.dao.keys().token_id_mapping(token.as_str());
         self.write_key_ttl(&map_key, ttl).await?;
 
-        let ts_key = self.session_repo.token_session_key(token.as_str());
+        let ts_key = self
+            .session_repo
+            .token_session_key_typed(&login_type, token.as_str());
         if self.dao.exists(&ts_key).await? {
             self.write_key_ttl(&ts_key, ttl).await?;
         }
 
-        if let Ok(ns) = Self::account_ns(info.login_type.as_ref(), info.login_id.as_ref()) {
+        if let Ok(ns) = self.account_ns(info.login_type.as_ref(), info.login_id.as_ref()) {
             self.session_repo.update_min_timeout(&ns, ttl).await?;
         }
 
@@ -965,20 +1390,47 @@ impl AuthService {
             return Ok(());
         }
 
-        let (alive, pruned) = self.token_repo.prune_index(login_type, login_id).await?;
-        if pruned > 0 {
-            tracing::debug!(
-                pruned,
-                login_id = %login_id,
-                "pruned orphan tokens before enforcing max_login_count"
-            );
-        }
+        let alive = if self.uses_session_terminals() || self.is_jwt_mixin() {
+            let ns = self.account_ns(login_type, login_id)?;
+            self.session_repo.get_token_list(&ns, None).await?
+        } else {
+            let (alive, pruned) = self.token_repo.prune_index(login_type, login_id).await?;
+            if pruned > 0 {
+                tracing::debug!(
+                    pruned,
+                    login_id = %login_id,
+                    "pruned orphan tokens before enforcing max_login_count"
+                );
+            }
+            alive
+        };
 
         let max = self.config.max_login_count as usize;
         if alive.len() <= max {
             return Ok(());
         }
         let overflow = alive.len() - max;
+
+        if self.is_jwt_mixin() {
+            let ns = self.account_ns(login_type, login_id)?;
+            let keep = self.config.is_logout_keep_token_session;
+            for stale in alive.iter().take(overflow) {
+                let _ = self.session_repo.remove_terminal(&ns, stale).await;
+                if self.token_repo_last_active_enabled() {
+                    let _ = self
+                        .dao
+                        .delete(&self.dao.keys().last_active_with_type(login_type, stale))
+                        .await;
+                }
+                if !keep {
+                    let _ = self
+                        .session_repo
+                        .delete_token_session_typed(login_type, &TokenValue::new(stale.clone()))
+                        .await;
+                }
+            }
+            return Ok(());
+        }
 
         for stale in alive.iter().take(overflow) {
             let _ = self
@@ -999,5 +1451,261 @@ impl AuthService {
         }
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::SaTokenManager;
+    use crate::compat::{
+        AccountIndex, LastActiveStore, SessionFormat, TokenValueFormat, WireConfig,
+    };
+    use crate::keys::SaKeyLayout;
+    use sa_token_storage_memory::MemoryStorage;
+
+    fn mixed_java_cfg(active_timeout: i64) -> SaTokenConfig {
+        let mut wire = WireConfig::native();
+        wire.token_value = TokenValueFormat::LoginId;
+        wire.last_active = LastActiveStore::SeparateKey;
+        wire.account_index = AccountIndex::SessionTerminals;
+        wire.session_format = SessionFormat::Serde;
+        wire.default_login_type = "login".into();
+        wire.default_device_type = Some("DEF".into());
+        wire.allow_login_id_colon = false;
+        SaTokenConfig {
+            token_name: "satoken".into(),
+            key_layout: SaKeyLayout::JavaFourSegment,
+            wire,
+            timeout: 3600,
+            active_timeout,
+            auto_renew: false,
+            active_refresh: true,
+            max_login_count: 12,
+            token_style: TokenStyle::Uuid,
+            is_concurrent: true,
+            is_share: false,
+            ..Default::default()
+        }
+    }
+
+    fn mgr(active_timeout: i64) -> SaTokenManager {
+        SaTokenManager::new(
+            Arc::new(MemoryStorage::new()),
+            mixed_java_cfg(active_timeout),
+        )
+    }
+
+    #[tokio::test]
+    async fn java_login_writes_login_id_last_active_and_terminals() {
+        let mgr = mgr(1800);
+        let token = mgr.login("10001").await.expect("login");
+        let dao = mgr.dao();
+        let keys = dao.keys();
+
+        let token_key = keys.token_info_with_type("login", token.as_str());
+        let raw = dao.get_string(&token_key).await.unwrap().unwrap();
+        assert_eq!(raw, "10001");
+
+        let la_key = keys.last_active_with_type("login", token.as_str());
+        let la = dao.get_string(&la_key).await.unwrap().unwrap();
+        assert_eq!(la.len(), 13);
+        assert!(la.chars().all(|c| c.is_ascii_digit()));
+
+        assert!(
+            dao.get_string(&keys.login_token("login", "10001"))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let index = dao
+            .list_range(&keys.login_token_index("login", "10001"), 0, None)
+            .await
+            .unwrap();
+        assert!(index.is_empty());
+
+        let session = mgr
+            .get_session_with_type("login", "10001")
+            .await
+            .expect("session");
+        assert_eq!(session.session_type, "Account-Session");
+        assert_eq!(session.terminal_list.len(), 1);
+        assert_eq!(session.terminal_list[0].token_value, token.as_str());
+        assert_eq!(session.terminal_list[0].device_type, "DEF");
+        assert_eq!(session.id, keys.account_session("login", "10001"));
+    }
+
+    #[tokio::test]
+    async fn java_kickout_keeps_token_key_as_minus_five() {
+        let mgr = mgr(-1);
+        let token = mgr.login("10001").await.expect("login");
+        mgr.kick_out("login", "10001").await.expect("kick");
+
+        let token_key = mgr.keys().token_info_with_type("login", token.as_str());
+        assert!(mgr.dao().exists(&token_key).await.unwrap());
+        let raw = mgr.dao().get_string(&token_key).await.unwrap().unwrap();
+        assert_eq!(raw, "-5");
+
+        let err = mgr.get_token_info_typed("login", &token).await.unwrap_err();
+        assert!(matches!(err, SaTokenError::AccountKickedOut));
+    }
+
+    #[tokio::test]
+    async fn java_missing_last_active_is_inactive() {
+        let mgr = mgr(1800);
+        let token = mgr.login("10001").await.expect("login");
+        let la_key = mgr.keys().last_active_with_type("login", token.as_str());
+        mgr.dao().delete(&la_key).await.unwrap();
+
+        let err = mgr.get_token_info_typed("login", &token).await.unwrap_err();
+        assert!(matches!(err, SaTokenError::TokenInactive));
+    }
+
+    #[tokio::test]
+    async fn java_login_rejects_reserved_marker() {
+        let mgr = mgr(-1);
+        let err = mgr.login("-5").await.unwrap_err();
+        assert!(matches!(err, SaTokenError::ConfigError(_)));
+    }
+
+    #[tokio::test]
+    async fn java_is_share_reuses_same_device_token() {
+        let mut cfg = mixed_java_cfg(-1);
+        cfg.is_share = true;
+        let mgr = SaTokenManager::new(Arc::new(MemoryStorage::new()), cfg);
+        let t1 = mgr.login("10001").await.unwrap();
+        let t2 = mgr.login("10001").await.unwrap();
+        assert_eq!(t1.as_str(), t2.as_str());
+        let session = mgr.get_session_with_type("login", "10001").await.unwrap();
+        assert_eq!(session.terminal_list.len(), 1);
+    }
+
+    fn mixin_java_cfg() -> SaTokenConfig {
+        let mut cfg = SaTokenConfig::java_compatible();
+        cfg.token_style = TokenStyle::JwtMixin;
+        cfg.jwt_secret_key = Some("java-interop-secret-key-32bytes!!".into());
+        cfg.timeout = -1;
+        cfg.active_timeout = -1;
+        cfg
+    }
+
+    fn mixin_mgr() -> SaTokenManager {
+        SaTokenManager::new(Arc::new(MemoryStorage::new()), mixin_java_cfg())
+    }
+
+    #[tokio::test]
+    async fn jwt_mixin_login_writes_session_not_token_key() {
+        let mgr = mixin_mgr();
+        let token = mgr.login("10001").await.expect("login");
+        assert_eq!(token.as_str().matches('.').count(), 2);
+
+        let dao = mgr.dao();
+        let keys = dao.keys();
+        let token_key = keys.token_info_with_type("login", token.as_str());
+        assert!(
+            dao.get_string(&token_key).await.unwrap().is_none(),
+            "Mixin must not write satoken:login:token:{{jwt}}"
+        );
+        let la_key = keys.last_active_with_type("login", token.as_str());
+        assert!(
+            dao.get_string(&la_key).await.unwrap().is_none(),
+            "timeout=-1 and activeTimeout=-1 must not write last-active"
+        );
+
+        let session = mgr
+            .get_session_with_type("login", "10001")
+            .await
+            .expect("session");
+        assert_eq!(session.session_type, "Account-Session");
+        assert_eq!(session.terminal_list.len(), 1);
+        assert_eq!(session.terminal_list[0].token_value, token.as_str());
+        assert_eq!(session.terminal_list[0].device_type, "DEF");
+    }
+
+    #[tokio::test]
+    async fn jwt_mixin_get_token_info_parses_login_id_from_jwt() {
+        let mgr = mixin_mgr();
+        let token = mgr.login("10001").await.expect("login");
+        assert!(mgr.is_valid(&token).await);
+        let info = mgr.get_token_info(&token).await.expect("info");
+        assert_eq!(info.login_id.as_ref(), "10001");
+        let typed = mgr
+            .get_token_info_typed("login", &token)
+            .await
+            .expect("typed");
+        assert_eq!(typed.login_id.as_ref(), "10001");
+    }
+
+    #[tokio::test]
+    async fn jwt_mixin_kick_logout_by_login_id_renew_are_disabled() {
+        let mgr = mixin_mgr();
+        let token = mgr.login("10001").await.expect("login");
+
+        let kick = mgr.kick_out("login", "10001").await.unwrap_err();
+        assert!(matches!(kick, SaTokenError::ApiDisabled(ref s) if s == "jwt-mixin"));
+
+        let by_id = mgr.logout_by_login_id("login", "10001").await.unwrap_err();
+        assert!(matches!(by_id, SaTokenError::ApiDisabled(ref s) if s == "jwt-mixin"));
+
+        let replaced = mgr.replaced("login", "10001").await.unwrap_err();
+        assert!(matches!(replaced, SaTokenError::ApiDisabled(ref s) if s == "jwt-mixin"));
+
+        let renew = mgr.renew_timeout(&token, 3600).await.unwrap_err();
+        assert!(matches!(renew, SaTokenError::ApiDisabled(ref s) if s == "jwt-mixin"));
+
+        let by_token = mgr.kick_out_by_token(&token).await.unwrap_err();
+        assert!(matches!(by_token, SaTokenError::ApiDisabled(ref s) if s == "jwt-mixin"));
+
+        assert!(mgr.is_valid(&token).await);
+        let session = mgr.get_session_with_type("login", "10001").await.unwrap();
+        assert_eq!(session.terminal_list.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn jwt_mixin_logout_does_not_touch_storage() {
+        let mgr = mixin_mgr();
+        let token = mgr.login("10001").await.expect("login");
+        mgr.logout(&token).await.expect("logout");
+        assert!(mgr.is_valid(&token).await);
+        let session = mgr.get_session_with_type("login", "10001").await.unwrap();
+        assert_eq!(session.terminal_list.len(), 1);
+        assert_eq!(session.terminal_list[0].token_value, token.as_str());
+    }
+
+    #[tokio::test]
+    async fn jwt_mixin_invalid_without_terminal() {
+        let mgr = mixin_mgr();
+        let token = mgr.login("10001").await.expect("login");
+        let ns = mgr.account_ns("login", "10001");
+        mgr.session_repo()
+            .remove_terminal(&ns, token.as_str())
+            .await
+            .unwrap();
+        let err = mgr.get_token_info(&token).await.unwrap_err();
+        assert!(matches!(err, SaTokenError::TokenNotFound));
+    }
+
+    #[tokio::test]
+    async fn jwt_mixin_writes_last_active_when_active_timeout_on() {
+        let mut cfg = mixin_java_cfg();
+        cfg.active_timeout = 1800;
+        let mgr = SaTokenManager::new(Arc::new(MemoryStorage::new()), cfg);
+        let token = mgr.login("10001").await.expect("login");
+        let dao = mgr.dao();
+        let keys = dao.keys();
+        assert!(
+            dao.get_string(&keys.token_info_with_type("login", token.as_str()))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let la = dao
+            .get_string(&keys.last_active_with_type("login", token.as_str()))
+            .await
+            .unwrap()
+            .expect("last-active");
+        assert_eq!(la.len(), 13);
+        assert!(la.chars().all(|c| c.is_ascii_digit()));
+        assert!(mgr.is_valid(&token).await);
     }
 }

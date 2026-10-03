@@ -874,6 +874,7 @@ warp::serve(routes)
 - **认证与授权**
   - [事件监听指南](docs/EVENT_LISTENER_zh-CN.md) - 监听认证事件（登录、登出、踢出）
   - [JWT 指南](docs/JWT_GUIDE_zh-CN.md) - JWT 实现，支持 8 种算法
+  - [与 Java Sa-Token 共享 Token](doc/zh/guide/java-interop.md) - 与 Java Sa-Token 1.46.0 的 Redis + JWT 互通
   - [OAuth2 指南](docs/OAUTH2_GUIDE_zh-CN.md) - OAuth2 授权码模式
 
 - **实时通信与 WebSocket**

@@ -1,0 +1,37 @@
+{
+  "scenario" : "disable",
+  "notes" : "disable 默认 service=login，值是封禁等级 1；timeout=-1。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001,
+    "service" : "login",
+    "level" : 1
+  },
+  "tokens" : {
+    "token" : "9dbaa5f7-c7ae-4aac-bf5d-e5e0be7b9860"
+  },
+  "kv" : [ {
+    "key" : "satoken:login:disable:login:10001",
+    "value" : "1",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:session:10001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566752,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\"},\"historyTerminalCount\":1,\"id\":\"satoken:login:session:10001\",\"loginId\":[\"java.lang.Long\",10001],\"loginType\":\"login\",\"terminalList\":[\"java.util.Vector\",[{\"@class\":\"cn.dev33.satoken.session.SaTerminalInfo\",\"createTime\":1791000566752,\"deviceId\":null,\"deviceType\":\"DEF\",\"extraData\":null,\"index\":1,\"tokenValue\":\"9dbaa5f7-c7ae-4aac-bf5d-e5e0be7b9860\"}]],\"token\":null,\"type\":\"Account-Session\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:token:9dbaa5f7-c7ae-4aac-bf5d-e5e0be7b9860",
+    "value" : "10001",
+    "ttl" : -1
+  } ]
+}

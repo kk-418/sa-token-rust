@@ -27,13 +27,18 @@ pub(crate) fn random_hex(length: usize) -> SaTokenResult<String> {
     Ok(hex[..length].to_string())
 }
 
-const TIK_CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
+const ALNUM_CHARSET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789";
 
-/// 8-char alphanumeric token without modulo bias (reject samples >= 248).
-/// 8 位字母数字 token，拒绝采样避免取模偏差（丢弃 >= 248 的字节）。
-pub(super) fn random_tik(len: usize) -> SaTokenResult<String> {
+/// `len` characters from `[A-Za-z0-9]`, unbiased (reject samples >= 248).
+/// `len` 位 `[A-Za-z0-9]`，拒绝采样避免取模偏差（丢弃 >= 248 的字节）。
+pub(crate) fn random_alnum(len: usize) -> SaTokenResult<String> {
+    if len == 0 {
+        return Err(SaTokenError::ConfigError(
+            "random alphanumeric length must be > 0".into(),
+        ));
+    }
     let mut out = String::with_capacity(len);
-    let max_unbiased = (256 / TIK_CHARSET.len()) * TIK_CHARSET.len(); // 248
+    let max_unbiased = (256 / ALNUM_CHARSET.len()) * ALNUM_CHARSET.len(); // 248
     let mut buf = [0u8; 32];
     while out.len() < len {
         fill_bytes(&mut buf)?;
@@ -43,8 +48,8 @@ pub(super) fn random_tik(len: usize) -> SaTokenResult<String> {
             }
             if (b as usize) < max_unbiased {
                 out.push(
-                    TIK_CHARSET
-                        .get((b as usize) % TIK_CHARSET.len())
+                    ALNUM_CHARSET
+                        .get((b as usize) % ALNUM_CHARSET.len())
                         .copied()
                         .unwrap_or(b'0') as char,
                 );
@@ -52,4 +57,10 @@ pub(super) fn random_tik(len: usize) -> SaTokenResult<String> {
         }
     }
     Ok(out)
+}
+
+/// 8-char alphanumeric token without modulo bias (reject samples >= 248).
+/// 8 位字母数字 token，拒绝采样避免取模偏差（丢弃 >= 248 的字节）。
+pub(super) fn random_tik(len: usize) -> SaTokenResult<String> {
+    random_alnum(len)
 }

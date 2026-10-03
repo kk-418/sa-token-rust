@@ -10,7 +10,7 @@ use std::time::Duration;
 
 use async_trait::async_trait;
 
-use crate::storage::{SaStorage, ScanPage, StorageResult};
+use crate::storage::{SaStorage, ScanPage, StorageResult, TtlState};
 
 /// 包装任意 [`SaStorage`]，统计 get / set / delete 调用次数
 pub struct CountingStorage {
@@ -97,6 +97,10 @@ impl SaStorage for CountingStorage {
 
     async fn ttl(&self, key: &str) -> StorageResult<Option<Duration>> {
         self.inner.ttl(key).await
+    }
+
+    async fn ttl_state(&self, key: &str) -> StorageResult<TtlState> {
+        self.inner.ttl_state(key).await
     }
 
     async fn clear(&self) -> StorageResult<()> {

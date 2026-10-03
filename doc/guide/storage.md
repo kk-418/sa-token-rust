@@ -180,6 +180,8 @@ You can also use `RedisStorage::builder().host(...).port(...).key_prefix(...).bu
 
 URL examples: `redis://localhost:6379/0`, `redis://:mypass@localhost:6379/0`.
 
+When sharing Redis with Java Sa-Token, the storage-layer `key_prefix` must be `""`. Java layout uses `token_name` as the key root (`satoken:login:token:...`). A prefix such as `sa:` becomes `sa:satoken:login:token:`, which Java cannot read. Use `RedisStorage::connect(...)` or `.key_prefix("")`. See [Java interop](./java-interop.md).
+
 ---
 
 ## DatabaseStorage
@@ -223,4 +225,5 @@ Custom backends: implement `SaStorage` from `sa-token-adapter` and inject with `
 - [Adapters](./adapter.md)
 - [Framework integration](./framework-integration.md)
 - [Migrate to 0.2](./migration-0.2.md)
+- [Java interop](./java-interop.md)
 - [Error reference](../reference/error-reference.md)

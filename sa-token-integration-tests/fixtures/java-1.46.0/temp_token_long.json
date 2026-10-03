@@ -1,0 +1,31 @@
+{
+  "scenario" : "temp_token_long",
+  "notes" : "SaTempUtil.createToken(10001L, -1, true)；值格式以 Java 实际写出为准（Long 经 jackson3）。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "value" : 10001
+  },
+  "tokens" : {
+    "tempToken" : "80ca3f46708a4a03bc59444a8e15cc89"
+  },
+  "kv" : [ {
+    "key" : "satoken:raw-session:temp-token:10001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566762,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\",\"__HD_TEMP_TOKEN_MAP\":{\"@class\":\"java.util.LinkedHashMap\",\"80ca3f46708a4a03bc59444a8e15cc89\":[\"java.lang.Long\",-1]}},\"historyTerminalCount\":0,\"id\":\"satoken:raw-session:temp-token:10001\",\"loginId\":null,\"loginType\":null,\"terminalList\":[\"java.util.Vector\",[]],\"token\":null,\"type\":\"temp-token\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:temp-token:80ca3f46708a4a03bc59444a8e15cc89",
+    "value" : "10001",
+    "ttl" : -1
+  } ]
+}

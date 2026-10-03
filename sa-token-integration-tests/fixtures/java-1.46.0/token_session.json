@@ -1,0 +1,37 @@
+{
+  "scenario" : "token_session",
+  "notes" : "getTokenSession().set；key 为 satoken:login:token-session:{token}，JSON 含 @class。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "none",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001,
+    "sessionKey" : "name",
+    "sessionValue" : "zhang"
+  },
+  "tokens" : {
+    "token" : "a9a4d602-d633-4dd5-81a1-e83a3fbc1a7c"
+  },
+  "kv" : [ {
+    "key" : "satoken:login:session:10001",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566758,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\"},\"historyTerminalCount\":1,\"id\":\"satoken:login:session:10001\",\"loginId\":[\"java.lang.Long\",10001],\"loginType\":\"login\",\"terminalList\":[\"java.util.Vector\",[{\"@class\":\"cn.dev33.satoken.session.SaTerminalInfo\",\"createTime\":1791000566758,\"deviceId\":null,\"deviceType\":\"DEF\",\"extraData\":null,\"index\":1,\"tokenValue\":\"a9a4d602-d633-4dd5-81a1-e83a3fbc1a7c\"}]],\"token\":null,\"type\":\"Account-Session\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:token-session:a9a4d602-d633-4dd5-81a1-e83a3fbc1a7c",
+    "value" : "{\"@class\":\"cn.dev33.satoken.session.SaSession\",\"createTime\":1791000566758,\"dataMap\":{\"@class\":\"java.util.concurrent.ConcurrentHashMap\",\"name\":\"zhang\"},\"historyTerminalCount\":0,\"id\":\"satoken:login:token-session:a9a4d602-d633-4dd5-81a1-e83a3fbc1a7c\",\"loginId\":null,\"loginType\":\"login\",\"terminalList\":[\"java.util.Vector\",[]],\"token\":\"a9a4d602-d633-4dd5-81a1-e83a3fbc1a7c\",\"type\":\"Token-Session\"}",
+    "ttl" : -1
+  }, {
+    "key" : "satoken:login:token:a9a4d602-d633-4dd5-81a1-e83a3fbc1a7c",
+    "value" : "10001",
+    "ttl" : -1
+  } ]
+}

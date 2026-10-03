@@ -1,0 +1,25 @@
+{
+  "scenario" : "jwt_expired",
+  "notes" : "手工签发 eff=1（1970ms）的 HS256 JWT；Verify 断言已过期。kv 为空。",
+  "config" : {
+    "tokenName" : "satoken",
+    "timeout" : -1,
+    "activeTimeout" : -1,
+    "dynamicActiveTimeout" : false,
+    "isConcurrent" : true,
+    "isShare" : false,
+    "jwtSecretKey" : "java-interop-secret-key-32bytes!!",
+    "sameTokenTimeout" : -1,
+    "jwtMode" : "stateless",
+    "loginType" : "login"
+  },
+  "inputs" : {
+    "loginId" : 10001,
+    "eff" : 1
+  },
+  "tokens" : {
+    "token" : "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOjEwMDAxLCJkZXZpY2VUeXBlIjoiREVGIiwiZWZmIjoxLCJyblN0ciI6ImV4cGlyZWRGaXh0dXJlUm5TdHIwMDAwMDAwMDAwMDEifQ.oM2YNiVFOikZbmIo1kDGi5hXcuXxSP6jtoavbg8AbhY",
+    "jwt" : "eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJsb2dpblR5cGUiOiJsb2dpbiIsImxvZ2luSWQiOjEwMDAxLCJkZXZpY2VUeXBlIjoiREVGIiwiZWZmIjoxLCJyblN0ciI6ImV4cGlyZWRGaXh0dXJlUm5TdHIwMDAwMDAwMDAwMDEifQ.oM2YNiVFOikZbmIo1kDGi5hXcuXxSP6jtoavbg8AbhY"
+  },
+  "kv" : [ ]
+}
