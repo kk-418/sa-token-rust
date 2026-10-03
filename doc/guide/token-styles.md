@@ -23,13 +23,13 @@ let manager = SaTokenConfig::builder()
 |---------|---------|
 | `Uuid` | Standard UUID (default) |
 | `SimpleUuid` | UUID without hyphens |
-| `Random32` | 32-char CSPRNG |
-| `Random64` | 64-char CSPRNG |
-| `Random128` | 128-char CSPRNG |
+| `Random32` | 32-char CSPRNG. Native lowercase hex; `[A-Za-z0-9]` when `opaque_gen=Java` |
+| `Random64` | 64-char CSPRNG. Same charset as Random32 |
+| `Random128` | 128-char CSPRNG. Same charset as Random32 |
 | `Jwt` | JSON Web Token; **`jwt_secret_key` required** or `try_build` fails |
-| `Hash` | SHA256 derived from login_id |
-| `Timestamp` | Millisecond timestamp + random suffix |
-| `Tik` | Short 8-character token |
+| `Hash` | SHA256 derived from login_id (Rust-only) |
+| `Timestamp` | Millisecond timestamp + random suffix (Rust-only) |
+| `Tik` | Native 8-char alnum; `{2}_{14}_{16}__` (36 chars, Java `SaStrategy`) when `opaque_gen=Java` |
 
 ```rust
 SaTokenConfig::builder()
@@ -40,6 +40,8 @@ SaTokenConfig::builder()
 ```
 
 Opaque styles (`Random*` / `Tik` / `Timestamp`) fit classic session tokens. Use `Jwt` when you need self-contained claims across services. `Hash` is derived from login_id — watch collisions and predictability under multi-device login.
+
+To share Redis with Java Sa-Token, call `java_compatible()` first. That preset sets `opaque_gen=Java`, so Random/Tik strings match `SaFoxUtil.getRandomString` / Java `tik`. Validation still treats the token as an opaque key. See [Java interop](./java-interop.md).
 
 ## Related
 

@@ -124,7 +124,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let token = TokenGenerator::generate_with_login_id(&config_tik, test_login_id)?;
     println!("   Token: {}", token.as_str());
     println!("   长度: {} 字符", token.as_str().len());
-    println!("   说明: 8位字母数字混合（URL安全）\n");
+    println!("   说明: 原生 8 位字母数字；java_compatible 时为 2_14_16__（36 位）\n");
+
+    println!("7b. Tik 风格（Java 形态）:");
+    let config_tik_java = SaTokenConfig {
+        token_style: TokenStyle::Tik,
+        wire: sa_token_core::WireConfig::java(),
+        ..Default::default()
+    };
+    let token = TokenGenerator::generate_with_login_id(&config_tik_java, test_login_id)?;
+    println!("   Token: {}", token.as_str());
+    println!("   长度: {} 字符", token.as_str().len());
+    println!("   说明: 对齐 Java SaStrategy tik：{{2}}_{{14}}_{{16}}__\n");
 
     // 生成多个 Token 验证唯一性
     println!("\n========================================");
@@ -158,11 +169,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("-----------|---------|------------------------------------------");
     println!("UUID       | 36 字符 | 标准 UUID 格式，带横杠");
     println!("SimpleUUID | 32 字符 | UUID 格式，无横杠");
-    println!("Random32   | 32 字符 | 随机十六进制字符串");
-    println!("Random64   | 64 字符 | 随机十六进制字符串（更长）");
+    println!("Random32   | 32 字符 | 原生 hex；opaque_gen=Java 时 [A-Za-z0-9]");
+    println!("Random64   | 64 字符 | 同上，更长");
     println!("Hash       | 64 字符 | SHA256 哈希，包含用户信息");
     println!("Timestamp  | ~30字符 | 包含时间信息，便于追溯");
-    println!("Tik        | 8 字符  | 短小精悍，适合分享链接");
+    println!("Tik        | 8 / 36  | 原生 8 位；Java 形态 2_14_16__");
     println!("JWT        | 变长    | 包含完整信息的自包含令牌\n");
 
     println!("========================================");

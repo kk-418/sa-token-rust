@@ -66,7 +66,7 @@ mod manager;
 
 pub use compat::{
     AccountIndex, ApiKeyFormat, ApplicationValue, JwtClaimsFormat, LastActiveStore, LoginIdJson,
-    SameTokenPastTtl, SessionFormat, SignAlgorithm, SignNonceFormat, TempTokenFormat,
+    OpaqueGen, SameTokenPastTtl, SessionFormat, SignAlgorithm, SignNonceFormat, TempTokenFormat,
     TokenValueFormat, WireCodec, WireConfig,
 };
 pub use config::{

@@ -116,6 +116,7 @@ wire = "java"
 | `sign_nonce` | `Rust` | `Java` | nonce 记录 vs 值为 nonce 本身 |
 | `sign_algorithm` | `HmacSha256` | `Md5` | 秒级 HMAC vs Java `k=v&...&key=secret` 毫秒 MD5 |
 | `same_token_past_ttl` | `Full` | `Remaining` | 旧 Same-Token 用完整 timeout vs 剩余寿命 |
+| `opaque_gen` | `Native` | `Java` | Random hex vs `[A-Za-z0-9]`；Tik 8 位 vs `{2}_{14}_{16}__`；Same-Token 32 hex vs 64 字母数字；API Key 后缀 36 hex vs 36 字母数字 |
 
 `LoginId` 必须搭配 `SeparateKey`。`TokenStyle::JwtMixin` 必须 `SeparateKey` 且 `is_concurrent=true`。`jwt_claims=Java` 只允许 HS256。`try_build` 会校验。
 

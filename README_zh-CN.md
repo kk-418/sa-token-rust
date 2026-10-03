@@ -502,6 +502,8 @@ let config = SaTokenConfig::builder()
 | **Timestamp** ⭐ | ~30 字符 | `1760404107094_a8f4f17d88fcddb8` | 包含时间戳，易于追踪 |
 | **Tik** ⭐ | 8 字符 | `GIxYHHD5` | 短小精悍，适合分享 |
 
+`java_compatible()` 会把 `opaque_gen` 设为 `Java`：Random 使用 `[A-Za-z0-9]`（不是 hex），Tik 变为 `{2}_{14}_{16}__`（36 位）。详见 [与 Java 共享 Token](doc/zh/guide/java-interop.md)。
+
 ⭐ = 本版本新增
 
 #### Token 风格示例

@@ -14,8 +14,8 @@ use sa_token_core::event::{SaTokenEventBus, SaTokenListener};
 use sa_token_core::keys::SaKeyLayout;
 use sa_token_core::{
     AccountIndex, ApiKeyFormat, ApplicationValue, JwtClaimsFormat, LastActiveStore, LoginIdJson,
-    SaTokenConfig, SaTokenManager, SameTokenPastTtl, SessionFormat, SignAlgorithm, SignNonceFormat,
-    TempTokenFormat, TokenValueFormat, WireConfig,
+    OpaqueGen, SaTokenConfig, SaTokenManager, SameTokenPastTtl, SessionFormat, SignAlgorithm,
+    SignNonceFormat, TempTokenFormat, TokenValueFormat, WireConfig,
 };
 
 /// Shared application state for all framework plugins.
@@ -536,6 +536,12 @@ impl SaTokenStateBuilder {
     /// Same-Token past-key TTL.
     pub fn wire_same_token_past_ttl(mut self, policy: SameTokenPastTtl) -> Self {
         self.config_builder = self.config_builder.wire_same_token_past_ttl(policy);
+        self
+    }
+
+    /// Opaque token string algorithm (Random / Tik / Same-Token / API Key suffix).
+    pub fn wire_opaque_gen(mut self, algo: OpaqueGen) -> Self {
+        self.config_builder = self.config_builder.wire_opaque_gen(algo);
         self
     }
 

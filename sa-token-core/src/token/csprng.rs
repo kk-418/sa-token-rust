@@ -64,3 +64,14 @@ pub(crate) fn random_alnum(len: usize) -> SaTokenResult<String> {
 pub(super) fn random_tik(len: usize) -> SaTokenResult<String> {
     random_alnum(len)
 }
+
+/// Java `tokenStyle=tik`: `{2}_{14}_{16}__` (36 chars, `SaStrategy.createToken`).
+/// Java `tokenStyle=tik`：`{2}_{14}_{16}__`（36 位）。
+pub(super) fn random_tik_java() -> SaTokenResult<String> {
+    Ok(format!(
+        "{}_{}_{}__",
+        random_alnum(2)?,
+        random_alnum(14)?,
+        random_alnum(16)?,
+    ))
+}

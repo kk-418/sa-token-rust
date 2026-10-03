@@ -5,7 +5,9 @@
 mod common;
 
 use common::setup;
-use sa_token_core::{SaTokenConfig, SaTokenError, config::TokenStyle, token::TokenValue};
+use sa_token_core::{
+    OpaqueGen, SaTokenConfig, SaTokenError, config::TokenStyle, token::TokenValue,
+};
 
 #[tokio::test]
 async fn test_uuid_token_format() {
@@ -41,6 +43,11 @@ async fn test_random_32_length() {
     );
     let token = mgr.login("user_1").await.expect("login");
     assert_eq!(token.as_str().len(), 32);
+    assert!(
+        token.as_str().chars().all(|c| c.is_ascii_hexdigit()),
+        "native Random32 must be hex, got {}",
+        token.as_str()
+    );
     assert!(mgr.is_valid(&token).await);
 }
 
@@ -108,6 +115,48 @@ async fn test_tik_style_short() {
     let token = mgr.login("user_1").await.expect("login");
     assert_eq!(token.as_str().len(), 8);
     assert!(token.as_str().chars().all(|c| c.is_ascii_alphanumeric()));
+    assert!(!token.as_str().contains('_'));
+    assert!(mgr.is_valid(&token).await);
+}
+
+#[tokio::test]
+async fn test_java_random_32_is_alnum() {
+    let mgr = setup::fresh_manager_with_config(
+        SaTokenConfig::builder()
+            .java_compatible()
+            .token_style(TokenStyle::Random32)
+            .timeout(3600)
+            .build_config(),
+    );
+    let token = mgr.login("10001").await.expect("login");
+    assert_eq!(token.as_str().len(), 32);
+    assert!(
+        token.as_str().chars().all(|c| c.is_ascii_alphanumeric()),
+        "java Random32 must be [A-Za-z0-9], got {}",
+        token.as_str()
+    );
+    assert_eq!(mgr.config.wire.opaque_gen, OpaqueGen::Java);
+    assert!(mgr.is_valid(&token).await);
+}
+
+#[tokio::test]
+async fn test_java_tik_matches_2_14_16() {
+    let mgr = setup::fresh_manager_with_config(
+        SaTokenConfig::builder()
+            .java_compatible()
+            .token_style(TokenStyle::Tik)
+            .timeout(3600)
+            .build_config(),
+    );
+    let token = mgr.login("10001").await.expect("login");
+    let s = token.as_str();
+    assert_eq!(s.len(), 36);
+    assert_eq!(&s[2..3], "_");
+    assert_eq!(&s[17..18], "_");
+    assert_eq!(&s[34..], "__");
+    assert!(s[..2].chars().all(|c| c.is_ascii_alphanumeric()));
+    assert!(s[3..17].chars().all(|c| c.is_ascii_alphanumeric()));
+    assert!(s[18..34].chars().all(|c| c.is_ascii_alphanumeric()));
     assert!(mgr.is_valid(&token).await);
 }
 

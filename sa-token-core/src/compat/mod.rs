@@ -194,6 +194,20 @@ pub enum SameTokenPastTtl {
     Remaining,
 }
 
+/// Opaque token string algorithm (Random / Tik / Same-Token / API Key suffix).
+/// 不透明 token 字符串算法（Random / Tik / Same-Token / API Key 后缀）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum OpaqueGen {
+    /// Native: Random hex; Tik 8-char alnum; Same-Token 32 hex; API Key suffix 36 hex.
+    /// 原生：Random 为 hex；Tik 8 位字母数字；Same-Token 32 位 hex；API Key 后缀 36 位 hex。
+    #[serde(alias = "native")]
+    Native,
+    /// Java 1.46.0: Random `[A-Za-z0-9]`; Tik `{2}_{14}_{16}__`; Same-Token 64 alnum; API Key suffix 36 alnum.
+    /// Java 1.46.0：Random 为 `[A-Za-z0-9]`；Tik 为 `{2}_{14}_{16}__`；Same-Token 64 位字母数字；API Key 后缀 36 位字母数字。
+    #[serde(alias = "java")]
+    Java,
+}
+
 /// Independently switchable wire-format knobs.
 /// 可逐项切换的值格式配置。
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -241,6 +255,8 @@ pub struct WireConfig {
     pub sign_algorithm: SignAlgorithm,
     /// Same-Token past-key TTL | Same-Token 旧键 TTL
     pub same_token_past_ttl: SameTokenPastTtl,
+    /// Opaque token string algorithm | 不透明 token 字符串算法
+    pub opaque_gen: OpaqueGen,
 }
 
 impl Default for WireConfig {
@@ -274,6 +290,7 @@ impl WireConfig {
             sign_nonce: SignNonceFormat::Rust,
             sign_algorithm: SignAlgorithm::HmacSha256,
             same_token_past_ttl: SameTokenPastTtl::Full,
+            opaque_gen: OpaqueGen::Native,
         }
     }
 
@@ -301,6 +318,7 @@ impl WireConfig {
             sign_nonce: SignNonceFormat::Java,
             sign_algorithm: SignAlgorithm::Md5,
             same_token_past_ttl: SameTokenPastTtl::Remaining,
+            opaque_gen: OpaqueGen::Java,
         }
     }
 }
@@ -349,6 +367,8 @@ struct WireConfigOverlay {
     sign_algorithm: Option<SignAlgorithm>,
     #[serde(default)]
     same_token_past_ttl: Option<SameTokenPastTtl>,
+    #[serde(default)]
+    opaque_gen: Option<OpaqueGen>,
 }
 
 fn parse_wire_preset(s: &str) -> Result<WireConfig, String> {
@@ -426,6 +446,9 @@ impl WireConfigOverlay {
         }
         if let Some(v) = self.same_token_past_ttl {
             cfg.same_token_past_ttl = v;
+        }
+        if let Some(v) = self.opaque_gen {
+            cfg.opaque_gen = v;
         }
         Ok(cfg)
     }
@@ -544,6 +567,7 @@ mod tests {
         assert_eq!(WireConfig::native().default_device_type, None);
         assert_eq!(WireConfig::native().safe_value, "ok");
         assert_eq!(WireConfig::native().temp_token_namespace, "default");
+        assert_eq!(WireConfig::native().opaque_gen, OpaqueGen::Native);
     }
 
     #[test]
@@ -566,6 +590,7 @@ mod tests {
         assert_eq!(j.sign_nonce, SignNonceFormat::Java);
         assert_eq!(j.sign_algorithm, SignAlgorithm::Md5);
         assert_eq!(j.same_token_past_ttl, SameTokenPastTtl::Remaining);
+        assert_eq!(j.opaque_gen, OpaqueGen::Java);
     }
 
     #[test]
@@ -598,6 +623,15 @@ mod tests {
         assert!(wrap.wire.allow_login_id_colon);
         assert_eq!(wrap.wire.default_login_type, "login");
         assert_eq!(wrap.wire.last_active, LastActiveStore::SeparateKey);
+        assert_eq!(wrap.wire.opaque_gen, OpaqueGen::Java);
+    }
+
+    #[test]
+    fn deserialize_opaque_gen_override() {
+        let wrap: Wrap =
+            serde_json::from_str(r#"{"wire":{"preset":"java","opaque_gen":"native"}}"#).unwrap();
+        assert_eq!(wrap.wire.opaque_gen, OpaqueGen::Native);
+        assert_eq!(wrap.wire.token_value, TokenValueFormat::LoginId);
     }
 
     #[test]

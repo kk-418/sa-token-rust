@@ -4,11 +4,11 @@
 //! Supports multiple token styles including UUID, Random, and JWT
 //! 支持多种 Token 风格，包括 UUID、随机字符串和 JWT
 
-use crate::compat::{JwtClaimsFormat, java_jwt};
+use crate::compat::{JwtClaimsFormat, OpaqueGen, java_jwt};
 use crate::config::{SaTokenConfig, TokenStyle};
 use crate::error::{SaTokenError, SaTokenResult};
 use crate::token::TokenValue;
-use crate::token::csprng::{fill_bytes, random_hex, random_tik};
+use crate::token::csprng::{fill_bytes, random_alnum, random_hex, random_tik, random_tik_java};
 use crate::token::jwt::{JwtAlgorithm, JwtClaims, JwtManager};
 use chrono::Utc;
 use sha2::{Digest, Sha256};
@@ -61,15 +61,15 @@ impl TokenGenerator {
         match config.token_style {
             TokenStyle::Uuid => Ok(Self::generate_uuid()),
             TokenStyle::SimpleUuid => Ok(Self::generate_simple_uuid()),
-            TokenStyle::Random32 => Self::generate_random_csprng(32),
-            TokenStyle::Random64 => Self::generate_random_csprng(64),
-            TokenStyle::Random128 => Self::generate_random_csprng(128),
+            TokenStyle::Random32 => Self::generate_opaque_random(config, 32),
+            TokenStyle::Random64 => Self::generate_opaque_random(config, 64),
+            TokenStyle::Random128 => Self::generate_opaque_random(config, 128),
             TokenStyle::Jwt | TokenStyle::JwtStateless | TokenStyle::JwtMixin => {
                 Self::generate_jwt_for(config, ctx)
             }
             TokenStyle::Hash => Self::generate_hash(&ctx.login_id),
             TokenStyle::Timestamp => Self::generate_timestamp(),
-            TokenStyle::Tik => Self::generate_tik(),
+            TokenStyle::Tik => Self::generate_tik(config),
         }
     }
 
@@ -117,6 +117,19 @@ impl TokenGenerator {
     /// hex token，熵来自 `length/2` 字节操作系统随机数（不是 UUID 的哈希）。
     pub fn generate_random_csprng(length: usize) -> SaTokenResult<TokenValue> {
         Ok(TokenValue::new(random_hex(length)?))
+    }
+
+    /// Random-N token. `OpaqueGen::Java` uses `[A-Za-z0-9]` like `SaFoxUtil.getRandomString`.
+    /// Random-N token。`OpaqueGen::Java` 使用 `[A-Za-z0-9]`，对齐 `SaFoxUtil.getRandomString`。
+    pub fn generate_opaque_random(
+        config: &SaTokenConfig,
+        length: usize,
+    ) -> SaTokenResult<TokenValue> {
+        let value = match config.wire.opaque_gen {
+            OpaqueGen::Native => random_hex(length)?,
+            OpaqueGen::Java => random_alnum(length)?,
+        };
+        Ok(TokenValue::new(value))
     }
 
     /// Old name kept as a wrapper so call sites can migrate in one commit.
@@ -257,8 +270,12 @@ impl TokenGenerator {
     }
 
     /// Generate Tik style token | 生成 Tik 风格 token
-    pub fn generate_tik() -> SaTokenResult<TokenValue> {
-        Ok(TokenValue::new(random_tik(8)?))
+    pub fn generate_tik(config: &SaTokenConfig) -> SaTokenResult<TokenValue> {
+        let value = match config.wire.opaque_gen {
+            OpaqueGen::Native => random_tik(8)?,
+            OpaqueGen::Java => random_tik_java()?,
+        };
+        Ok(TokenValue::new(value))
     }
 
     fn parse_jwt_algorithm(alg: &str) -> Option<JwtAlgorithm> {
@@ -425,6 +442,34 @@ mod tests {
         assert!(!token.as_str().contains('.'));
     }
 
+    fn is_hex(s: &str) -> bool {
+        s.bytes().all(|b| b.is_ascii_hexdigit())
+    }
+
+    fn is_alnum(s: &str) -> bool {
+        s.bytes().all(|b| b.is_ascii_alphanumeric())
+    }
+
+    fn is_java_tik(s: &str) -> bool {
+        let b = s.as_bytes();
+        b.len() == 36
+            && b[2] == b'_'
+            && b[17] == b'_'
+            && b[34] == b'_'
+            && b[35] == b'_'
+            && is_alnum(&s[..2])
+            && is_alnum(&s[3..17])
+            && is_alnum(&s[18..34])
+    }
+
+    fn java_cfg(style: TokenStyle) -> SaTokenConfig {
+        SaTokenConfig {
+            token_style: style,
+            wire: crate::compat::WireConfig::java(),
+            ..SaTokenConfig::default()
+        }
+    }
+
     #[test]
     fn test_random_32_length() {
         let config = SaTokenConfig {
@@ -432,8 +477,8 @@ mod tests {
             ..SaTokenConfig::default()
         };
         let token = TokenGenerator::generate_with_login_id(&config, "user_random").unwrap();
-        assert!(!token.as_str().is_empty());
         assert_eq!(token.as_str().len(), 32);
+        assert!(is_hex(token.as_str()), "native Random32 must be hex");
     }
 
     #[test]
@@ -443,8 +488,8 @@ mod tests {
             ..SaTokenConfig::default()
         };
         let token = TokenGenerator::generate_with_login_id(&config, "user_random").unwrap();
-        assert!(!token.as_str().is_empty());
         assert_eq!(token.as_str().len(), 64);
+        assert!(is_hex(token.as_str()), "native Random64 must be hex");
     }
 
     #[test]
@@ -454,7 +499,48 @@ mod tests {
             ..SaTokenConfig::default()
         };
         let token = TokenGenerator::generate_with_login_id(&config, "user_random").unwrap();
-        assert!(!token.as_str().is_empty());
         assert_eq!(token.as_str().len(), 128);
+        assert!(is_hex(token.as_str()), "native Random128 must be hex");
+    }
+
+    #[test]
+    fn test_tik_native_is_8_alnum() {
+        let config = SaTokenConfig {
+            token_style: TokenStyle::Tik,
+            ..SaTokenConfig::default()
+        };
+        let token = TokenGenerator::generate_with_login_id(&config, "user_tik").unwrap();
+        assert_eq!(token.as_str().len(), 8);
+        assert!(is_alnum(token.as_str()));
+        assert!(!token.as_str().contains('_'));
+    }
+
+    #[test]
+    fn java_random_32_is_alnum() {
+        let token =
+            TokenGenerator::generate_with_login_id(&java_cfg(TokenStyle::Random32), "10001")
+                .unwrap();
+        assert_eq!(token.as_str().len(), 32);
+        assert!(
+            is_alnum(token.as_str()),
+            "java Random32 must be [A-Za-z0-9]"
+        );
+    }
+
+    #[test]
+    fn java_tik_matches_2_14_16() {
+        let token =
+            TokenGenerator::generate_with_login_id(&java_cfg(TokenStyle::Tik), "10001").unwrap();
+        assert!(
+            is_java_tik(token.as_str()),
+            "java Tik must be 2_14_16__, got {}",
+            token.as_str()
+        );
+    }
+
+    #[test]
+    fn java_compatible_defaults_opaque_gen_java() {
+        let cfg = SaTokenConfig::java_compatible();
+        assert_eq!(cfg.wire.opaque_gen, OpaqueGen::Java);
     }
 }

@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use crate::compat::SameTokenPastTtl;
+use crate::compat::{OpaqueGen, SameTokenPastTtl};
 use crate::error::{SaTokenError, SaTokenResult};
 use crate::manager::SaTokenManager;
 use crate::util::StpUtil;
@@ -25,8 +25,11 @@ fn ttl(timeout_secs: i64) -> Option<Duration> {
     }
 }
 
-fn generate_token() -> SaTokenResult<String> {
-    crate::token::random_hex(32)
+fn generate_token(opaque_gen: OpaqueGen) -> SaTokenResult<String> {
+    match opaque_gen {
+        OpaqueGen::Native => crate::token::random_hex(32),
+        OpaqueGen::Java => crate::token::random_alnum(64),
+    }
 }
 
 /// Past-key TTL: full timeout, or remaining lifetime of the current token.
@@ -118,7 +121,7 @@ async fn refresh_token_on(manager: &SaTokenManager) -> SaTokenResult<String> {
         dao.set_string(&past_key, cur, past).await?;
     }
 
-    let next = generate_token()?;
+    let next = generate_token(manager.config.wire.opaque_gen)?;
     let expected = current.as_deref().filter(|s| !s.is_empty());
     let won = dao.cas(&cur_key, expected, &next, ttl_opt).await?;
     if won {
@@ -224,6 +227,9 @@ mod tests {
         assert_eq!(mgr.keys().same_token_past(), "satoken:var:past-same-token");
         let first = refresh_token_on(&mgr).await.unwrap();
         let second = refresh_token_on(&mgr).await.unwrap();
+        assert_eq!(first.len(), 64);
+        assert!(first.bytes().all(|b| b.is_ascii_alphanumeric()));
+        assert_eq!(second.len(), 64);
         assert_ne!(first, second);
         assert_eq!(
             get_past_token_nh_on(&mgr).await.unwrap().as_deref(),

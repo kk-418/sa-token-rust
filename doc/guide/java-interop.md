@@ -116,6 +116,7 @@ wire = "java"
 | `sign_nonce` | `Rust` | `Java` | Native nonce record vs value = nonce |
 | `sign_algorithm` | `HmacSha256` | `Md5` | Second-based HMAC vs Java `k=v&...&key=secret` millis MD5 |
 | `same_token_past_ttl` | `Full` | `Remaining` | Past Same-Token uses full timeout vs remaining TTL |
+| `opaque_gen` | `Native` | `Java` | Random hex vs `[A-Za-z0-9]`; Tik 8-char vs `{2}_{14}_{16}__`; Same-Token 32 hex vs 64 alnum; API Key suffix 36 hex vs 36 alnum |
 
 `LoginId` requires `SeparateKey`. `TokenStyle::JwtMixin` requires `SeparateKey` and `is_concurrent=true`. `jwt_claims=Java` allows HS256 only. `try_build` validates this.
 

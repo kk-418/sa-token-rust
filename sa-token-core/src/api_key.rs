@@ -11,6 +11,7 @@ use std::time::Duration;
 use serde::{Deserialize, Serialize};
 
 use crate::compat::ApiKeyFormat;
+use crate::compat::OpaqueGen;
 use crate::compat::java_api_key::{decode_api_key, encode_api_key};
 use crate::context::{RequestAuthMeta, SaTokenContext};
 use crate::dao::SaTokenDao;
@@ -51,10 +52,14 @@ fn now_millis() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }
 
-/// 36 hex chars from CSPRNG; UUID concatenation if the OS RNG is unavailable.
-/// 36 位 hex（CSPRNG）；操作系统 RNG 不可用时回退 UUID 拼接。
-fn random_suffix() -> String {
-    match crate::token::random_hex(RANDOM_SUFFIX_LEN) {
+/// 36-char suffix: hex (native) or `[A-Za-z0-9]` (Java `SaFoxUtil.getRandomString(36)`).
+/// 36 位后缀：原生 hex，或 Java `[A-Za-z0-9]`。
+fn random_suffix(opaque_gen: OpaqueGen) -> String {
+    let generated = match opaque_gen {
+        OpaqueGen::Native => crate::token::random_hex(RANDOM_SUFFIX_LEN),
+        OpaqueGen::Java => crate::token::random_alnum(RANDOM_SUFFIX_LEN),
+    };
+    match generated {
         Ok(s) => s,
         Err(_) => {
             let a = uuid::Uuid::new_v4().simple().to_string();
@@ -245,7 +250,11 @@ impl ApiKeyManager {
         ApiKeyModel {
             title: String::new(),
             intro: String::new(),
-            api_key: format!("{}{}", self.prefix, random_suffix()),
+            api_key: format!(
+                "{}{}",
+                self.prefix,
+                random_suffix(self.dao.config().wire.opaque_gen)
+            ),
             login_id: login_id.into(),
             create_time: now,
             expires_time,
@@ -602,6 +611,10 @@ mod tests {
         assert!(model.api_key.starts_with(DEFAULT_PREFIX));
         let suffix = model.api_key.trim_start_matches(DEFAULT_PREFIX);
         assert_eq!(suffix.len(), RANDOM_SUFFIX_LEN);
+        assert!(
+            suffix.bytes().all(|b| b.is_ascii_hexdigit()),
+            "native API Key suffix must be hex, got {suffix}"
+        );
         assert_eq!(model.login_id, "user-1");
         assert!(model.is_valid);
         assert!(!model.time_expired());
@@ -683,6 +696,12 @@ mod tests {
     async fn java_model_key_and_index_shape() {
         let (mgr, api) = java_manager();
         let mut model = api.create("10001");
+        let suffix = model.api_key.trim_start_matches(DEFAULT_PREFIX);
+        assert_eq!(suffix.len(), RANDOM_SUFFIX_LEN);
+        assert!(
+            suffix.bytes().all(|b| b.is_ascii_alphanumeric()),
+            "java API Key suffix must be [A-Za-z0-9], got {suffix}"
+        );
         model.title = "interop".into();
         model.scopes = vec!["user.read".into()];
         model.expires_time = NEVER_EXPIRE;

@@ -475,6 +475,8 @@ let config = SaTokenConfig::builder()
 | **Timestamp** ⭐ | ~30 chars | `1760404107094_a8f4f17d88fcddb8` | Includes timestamp, easy to track |
 | **Tik** ⭐ | 8 chars | `GIxYHHD5` | Short and shareable, perfect for URLs |
 
+`java_compatible()` sets `opaque_gen=Java`: Random uses `[A-Za-z0-9]` (not hex), Tik becomes `{2}_{14}_{16}__` (36 chars). See [Java interop](doc/guide/java-interop.md).
+
 ⭐ = New in this version
 
 #### Token Style Examples

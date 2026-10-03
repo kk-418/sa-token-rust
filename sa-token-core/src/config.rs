@@ -4,7 +4,7 @@
 
 use crate::compat::{
     AccountIndex, ApiKeyFormat, ApplicationValue, JwtClaimsFormat, LastActiveStore, LoginIdJson,
-    SameTokenPastTtl, SessionFormat, SignAlgorithm, SignNonceFormat, TempTokenFormat,
+    OpaqueGen, SameTokenPastTtl, SessionFormat, SignAlgorithm, SignNonceFormat, TempTokenFormat,
     TokenValueFormat, WireConfig,
 };
 use crate::error::{SaTokenError, SaTokenResult};
@@ -1234,6 +1234,13 @@ impl SaTokenConfigBuilder {
     /// Same-Token past-key TTL | Same-Token 旧键 TTL
     pub fn wire_same_token_past_ttl(mut self, policy: SameTokenPastTtl) -> Self {
         self.config.wire.same_token_past_ttl = policy;
+        self
+    }
+
+    /// Opaque token string algorithm (Random / Tik / Same-Token / API Key suffix).
+    /// 不透明 token 字符串算法（Random / Tik / Same-Token / API Key 后缀）。
+    pub fn wire_opaque_gen(mut self, algo: OpaqueGen) -> Self {
+        self.config.wire.opaque_gen = algo;
         self
     }
 
