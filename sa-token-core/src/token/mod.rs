@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 mod csprng;
 pub mod generator;
 pub mod jwt;
+mod jwt_crypto;
 pub mod map;
 pub mod validator;
 

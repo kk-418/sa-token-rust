@@ -166,9 +166,11 @@ anyhow = "1.0"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0"
 uuid = { version = "1.23.1", features = ["v4", "serde"] }
-jsonwebtoken = { version = "10.4.0", features = ["rust_crypto"] }
+# 加密后端由 sa-token-core 的 `jwt-rust-crypto` feature 决定；默认用内置仅 HMAC 后端（不引入 rsa）。
+jsonwebtoken = "10.4.0"
 sha2 = "0.11.0"
-argon2 = "0.5"
+# std 打开 rand_core/getrandom（oauth2 secret 用 OsRng）；原先靠 jsonwebtoken rust_crypto 间接打开。
+argon2 = { version = "0.5", features = ["std"] }
 hmac = "0.13"
 md-5 = "0.11"
 sha1 = "0.11"

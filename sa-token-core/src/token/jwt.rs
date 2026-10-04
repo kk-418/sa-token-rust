@@ -340,6 +340,7 @@ impl JwtManager {
         let mut header = Header::new(self.algorithm.into());
         header.typ = Some("JWT".to_string());
         let encoding_key = EncodingKey::from_secret(self.secret.as_bytes());
+        super::jwt_crypto::ensure_provider();
         encode(&header, payload, &encoding_key)
             .map_err(|e| SaTokenError::InvalidToken(format!("Failed to generate JWT: {}", e)))
     }
@@ -371,6 +372,7 @@ impl JwtManager {
         }
 
         let decoding_key = DecodingKey::from_secret(self.secret.as_bytes());
+        super::jwt_crypto::ensure_provider();
 
         let token_data =
             decode::<JwtClaims>(token, &decoding_key, &validation).map_err(|e| match e.kind() {
@@ -392,6 +394,7 @@ impl JwtManager {
         validation.leeway = 0;
 
         let decoding_key = DecodingKey::from_secret(self.secret.as_bytes());
+        super::jwt_crypto::ensure_provider();
         let token_data =
             decode::<Value>(token, &decoding_key, &validation).map_err(|e| match e.kind() {
                 jsonwebtoken::errors::ErrorKind::ExpiredSignature => SaTokenError::TokenExpired,

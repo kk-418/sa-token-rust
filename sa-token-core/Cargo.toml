@@ -41,6 +41,9 @@ sa-token-storage-memory = { workspace = true }
 
 [features]
 default = []
+# 使用 jsonwebtoken 的 RustCrypto 后端（含 RSA / EC / EdDSA）。默认关闭：内置仅 HMAC 后端，
+# 依赖图不含 rsa（RUSTSEC-2023-0071）。JwtManager 只用 HS256 / HS384 / HS512。
+jwt-rust-crypto = ["jsonwebtoken/rust_crypto"]
 fory = ["sa-token-adapter/fory"]
 sso-http = ["dep:reqwest"]
 
