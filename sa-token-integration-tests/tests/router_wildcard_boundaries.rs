@@ -93,7 +93,18 @@ async fn check_layer(exclude: &str, paths: &[(&str, bool)]) {
             .oneshot(req)
             .await
             .expect("authenticated response");
-        assert_eq!(response.status(), StatusCode::OK, "authenticated: {path}");
+        // The default firewall rejects repeated separators before path authentication,
+        // including authenticated requests; the matcher matrix covers those segments.
+        let authenticated_status = if path.contains("//") {
+            StatusCode::UNAUTHORIZED
+        } else {
+            StatusCode::OK
+        };
+        assert_eq!(
+            response.status(),
+            authenticated_status,
+            "authenticated: {path}"
+        );
     }
 }
 

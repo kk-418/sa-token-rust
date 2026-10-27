@@ -35,10 +35,13 @@ type LoginIdValidator = Arc<dyn Fn(&str) -> bool + Send + Sync>;
 /// ```
 pub fn match_path(path: &str, pattern: &str) -> bool {
     if pattern == "/**" {
-        return true;
+        return path.is_empty() || path.starts_with('/');
     }
     if let Some(prefix) = pattern.strip_suffix("/**") {
-        return path.starts_with(prefix);
+        return path == prefix
+            || path
+                .strip_prefix(prefix)
+                .is_some_and(|rest| rest.starts_with('/'));
     }
     if let Some(suffix) = pattern.strip_prefix("*") {
         return path.ends_with(suffix);
@@ -46,15 +49,10 @@ pub fn match_path(path: &str, pattern: &str) -> bool {
     // `/*`: single path segment after prefix (e.g. `/api/*` matches `/api/user`, not `/api/a/b`).
     // `/*`：前缀后仅一层路径段（如 `/api/*` 匹配 `/api/user`，不匹配 `/api/a/b`）。
     if let Some(prefix) = pattern.strip_suffix("/*") {
-        if !path.starts_with(prefix) {
-            return false;
-        }
-        let rest = &path[prefix.len()..];
-        if rest.is_empty() || rest == "/" {
-            return true;
-        }
-        let rest = rest.trim_start_matches('/');
-        return !rest.contains('/');
+        return path
+            .strip_prefix(prefix)
+            .and_then(|rest| rest.strip_prefix('/'))
+            .is_some_and(|rest| !rest.contains('/'));
     }
     path == pattern
 }
